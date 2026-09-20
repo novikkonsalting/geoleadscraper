@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Builds extension/content/index.iife.js from the upstream vendor bundle plus
 // the GeoLeadScraper Yandex module, then packs the unpacked extension.
-// Run: node tools/build.mjs [--zip]
+// Run: node tools/build.mjs [--zip] [--project-zip]
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -15,6 +15,15 @@ const out = join(root, 'extension/content/index.iife.js');
 writeFileSync(out, vendor + module_, 'utf8');
 const version = JSON.parse(readFileSync(join(root, 'extension/manifest.json'), 'utf8')).version;
 console.log(`built ${out} (${vendor.length} vendor + ${module_.length} module bytes), manifest ${version}`);
+
+if (process.argv.includes('--project-zip')) {
+  const dist = join(root, 'dist');
+  if (!existsSync(dist)) mkdirSync(dist);
+  const zip = join(dist, `geoleadscraper-project-v${version}.zip`);
+  execFileSync('rm', ['-f', zip]);
+  execFileSync('zip', ['-r', '-q', zip, '.', '-x', '.git/*', 'dist/*.zip'], { cwd: root });
+  console.log(`packed ${zip}`);
+}
 
 if (process.argv.includes('--zip')) {
   const dist = join(root, 'dist');

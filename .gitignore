@@ -1,2 +1,6 @@
 node_modules/
 *.log
+
+# Snapshot of the repository itself: regenerate with
+# node tools/build.mjs --project-zip
+dist/geoleadscraper-project-*.zip

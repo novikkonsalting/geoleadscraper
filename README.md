@@ -21,7 +21,8 @@ Google Maps и 2GIS части проекта не затрагиваются: �
 ## Сборка и проверка
 
 ```bash
-node tools/build.mjs --zip     # собрать extension/ и dist/*.zip
+node tools/build.mjs --zip     # собрать extension/ и ZIP расширения
+node tools/build.mjs --project-zip  # ZIP всего проекта (в git не хранится)
 node tools/smoke-test.mjs      # обязательный прогон перед коммитом
 node tools/geo-check.mjs       # качество встроенных границ
 node tools/analyze-raw.mjs geoleadscraper-yandex_maps-RAW_ALL-*.csv
