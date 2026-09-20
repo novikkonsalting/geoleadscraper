@@ -1,0 +1,15 @@
+{
+  "name": "geoleadscraper",
+  "version": "1.5.0",
+  "private": true,
+  "type": "module",
+  "description": "GeoLeadScraper — Yandex Maps AUTO + BATCH, RAW-first collection with an offline district filter.",
+  "scripts": {
+    "build": "node tools/build.mjs --zip",
+    "test": "node tools/smoke-test.mjs",
+    "geo": "node tools/geo-check.mjs"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.5"
+  }
+}

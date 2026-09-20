@@ -47,7 +47,6 @@
     scrolledEver: false,
     maxScrollTop: 0,
     warning: null,
-    data: [],
     seenUrls: [],
     seenPlaceIds: [],
     acceptedKeys: [],
@@ -65,15 +64,14 @@
     startTime: null,
     lastProgressTime: null,
     error: null,
-    cardCache: {},
-    data: [],
+    finalCount: 0,
+    storageVersion: 2,
     filterStatus: 'IDLE',
     filterPhase: 'IDLE',
     filterError: null,
     filterStartedAt: null,
     filterCompletedAt: null,
     filterStats: {processed:0,total:0,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,ambiguousDistrict:0,matchedSourceRecords:0},
-    finalData: [],
     geoInfo: null,
     geoError: null,
     warnings: [],
@@ -94,14 +92,31 @@
   const log = (msg, data) => console.log(`[AUTO] ${msg}`, data || '');
   const blog = (msg, data) => console.log(`[BATCH] ${msg}`, data || '');
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
-  const normalize = v => (v || '').toLocaleLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
-  const normPhone = v => (v || '').replace(/\D+/g, '');
-  const stableKey = item => {
-    if (item.place_id) return `id:${item.place_id}`;
-    const p = normPhone(item.phone || item.phones), a = normalize(item.address), t = normalize(item.title);
-    if (p && a) return `phone-address:${p}|${a}`;
-    if (t && a) return `title-address:${t}|${a}`;
-    return `url:${item.maps_url || ''}`;
+  // Keying, merging and dedupe live in src/shared-record.js so that the content
+  // script and the storage service worker can never disagree about them.
+  const {normalize, stableKey, sourceRecords, uniqueJoined} = globalThis.GLSRecord;
+
+  // Client for the IndexedDB dataset owned by the service worker. The dataset
+  // no longer rides inside the chrome.storage snapshot, so a write costs one
+  // record instead of the whole registry.
+  const STORE_PAGE = 500;
+  const store = (op, payload) => new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({type:'GLS_STORE', op, payload: payload || {}}, response => {
+      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+      if (!response) return reject(new Error('Хранилище не ответило. Перезагрузите расширение.'));
+      if (!response.ok) return reject(new Error(response.error || 'Ошибка хранилища.'));
+      resolve(response.data);
+    });
+  });
+  // Streams a store page by page so that neither the filter nor the export
+  // ever holds the whole registry in memory.
+  const eachStored = async (op, onPage) => {
+    for (let offset = 0; ; offset += STORE_PAGE) {
+      const rows = await store(op, {offset, limit: STORE_PAGE});
+      if (!rows.length) return;
+      await onPage(rows, offset);
+      if (rows.length < STORE_PAGE) return;
+    }
   };
 
 
@@ -421,12 +436,15 @@
 
   const autoSnapshot = () => ({...state,seenUrls:[...seenUrls],seenPlaceIds:[...seenPlaceIds],acceptedKeys:[...acceptedKeys]});
   const writeAutoStorage = async () => {
+    // Materialising the dedupe sets is O(n); doing it here rather than on every
+    // patchAuto means it happens once per debounce window, not four times per
+    // card.
     const snapshot=autoSnapshot();
     autoPersistInFlight=autoPersistInFlight.then(()=>chrome.storage.local.set({[AUTO_KEY]:snapshot}).catch(e=>console.warn('[AUTO] storage write failed',e)));
     await autoPersistInFlight;
   };
   const persistAuto = async (immediate=false) => {
-    state.seenUrls=[...seenUrls];state.seenPlaceIds=[...seenPlaceIds];state.acceptedKeys=[...acceptedKeys];render();
+    render();
     if(immediate){if(autoPersistTimer){clearTimeout(autoPersistTimer);autoPersistTimer=null;}await writeAutoStorage();return;}
     if(autoPersistTimer)return;
     autoPersistTimer=setTimeout(()=>{autoPersistTimer=null;void writeAutoStorage();},350);
@@ -456,7 +474,7 @@
       stats.newUrls++; seenUrls.add(url); if(pidFromUrl)seenPlaceIds.add(pidFromUrl);
       await patchAuto({totalEncountered:state.totalEncountered+1});
 
-      let item=pidFromUrl && batch.cardCache ? batch.cardCache[pidFromUrl] : null, fromCache=!!item;
+      let item=pidFromUrl ? await store('getRawByPlaceId',{place_id:pidFromUrl}) : null, fromCache=!!item;
       if(item){stats.cacheReused++;await patchAuto({reusedFromBatchCache:state.reusedFromBatchCache+1});}
       else{
         try{item=await parser(url,{extractWebsites:false});}catch{item=null;}
@@ -467,14 +485,19 @@
       }
 
       item=normalizeCoords(item);
-      if(batch.status!==BATCH.IDLE && item.place_id){batch.cardCache ||= {};batch.cardCache[item.place_id]=item;}
       const enriched={...item,source:'yandex_maps',source_query:state.currentSearchQuery,category_validation:'UNKNOWN',district_validation:'UNKNOWN',detected_district:'',final_status:'RAW',exclude_reason:''};
       // RAW-FIRST: collection never depends on category/GEO filtering.
       // Every unique card is preserved; filtering is a separate local post-process.
       const key=stableKey(enriched);
       if(acceptedKeys.has(key)){stats.duplicateItems++;await patchAuto({duplicatesCount:state.duplicatesCount+1});continue;}
+      // Durable before it is counted: the card is in IndexedDB the moment it is
+      // read, so a crash costs at most the card in flight.
+      const totals=await store('putRaw',{records:[enriched],record:currentBatchQuery()||{district:'',group:'',category:'',query:state.currentSearchQuery}});
       stats.acceptedUnique++;acceptedKeys.add(key);
-      const data=[...state.data,enriched];await patchAuto({data,uniqueCount:data.length,lastProgressTime:Date.now()});
+      await patchAuto({uniqueCount:acceptedKeys.size,lastProgressTime:Date.now()});
+      if(batch.uniqueCount!==totals.rawUnique||batch.sourceHits!==totals.rawSourceHits){
+        batch={...batch,uniqueCount:totals.rawUnique,sourceHits:totals.rawSourceHits};
+      }
       if(!fromCache && CFG.CARD_DELAY_MS>0)await sleep(CFG.CARD_DELAY_MS+Math.floor(Math.random()*180));
     }
     return stats;
@@ -579,9 +602,8 @@
       log('error', e?.message || e);
       if (batch.status === BATCH.RUNNING) {
         const q = [...batch.queue], current=q[batch.currentIndex];
-        const checkpoint=current?mergeAutoIntoBatch(batch.data,state.data,current):{data:batch.data,sourceHits:batch.sourceHits};
         if (current) q[batch.currentIndex] = {...current,status:'ERROR',error:state.error,uniqueFound:state.uniqueCount};
-        await patchBatch({...checkpoint,uniqueCount:checkpoint.data.length,status:BATCH.ERROR,error:state.error,queue:q,failedQueries:batch.failedQueries+1});
+        await patchBatch({...await storeTotals(),status:BATCH.ERROR,error:state.error,queue:q,failedQueries:batch.failedQueries+1});
       }
     }).finally(() => { loopPromise = null; });
   };
@@ -597,15 +619,21 @@
   const stopAuto = async () => { if (![AUTO.IDLE,AUTO.COMPLETED,AUTO.STOPPED].includes(state.status)) { runToken++; await patchAuto({status:AUTO.STOPPED},true); log('stopped by user'); } };
   const resetAuto = async () => { runToken++; if(autoPersistTimer){clearTimeout(autoPersistTimer);autoPersistTimer=null;} state=blankAuto(); seenUrls.clear(); seenPlaceIds.clear(); acceptedKeys.clear(); try {await chrome.storage.local.remove(AUTO_KEY);} catch{} render(); log('reset'); };
 
+  const storeTotals = async () => {
+    const t=await store('stats');
+    return {uniqueCount:t.rawUnique,sourceHits:t.rawSourceHits,finalCount:t.finalCount};
+  };
+
   const csvCell = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
-  const saveCsv = (rows, fields, name) => {
-    const csv = '\uFEFF' + [fields.join(','), ...rows.map(row => fields.map(f => csvCell(row[f])).join(','))].join('\r\n');
-    const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'}), url=URL.createObjectURL(blob), a=document.createElement('a');
+  const csvRows = (rows,fields) => rows.map(row => fields.map(f => csvCell(row[f])).join(',')).join('\r\n');
+  // Streams the file in chunks: a Blob takes an array of strings, so a large
+  // registry never has to be concatenated into one string in memory.
+  const saveCsvStream = async (name, fields, produce) => {
+    const parts=['\uFEFF'+fields.join(',')];
+    await produce(rows => { if(rows.length) parts.push('\r\n'+csvRows(rows,fields)); });
+    const blob = new Blob(parts,{type:'text/csv;charset=utf-8;'}), url=URL.createObjectURL(blob), a=document.createElement('a');
     a.href=url; a.download=`${name}-${new Date().toISOString().replace(/[-:TZ.]/g,'').slice(0,14)}.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   };
-  const exportAuto = () => saveCsv(state.data,
-    ['place_id','source','source_query','category_validation','district_validation','detected_district','title','address','phone','website','maps_url','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'],
-    'geoleadscraper-yandex_maps-auto');
   const RAW_FIELDS=['source_district','source_group','source_category','title','address','phone','website','maps_url','source','source_query','source_queries_count','source_records','place_id','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'];
   const RAW_META_FIELDS=['export_batch_status','export_queries_total','export_queries_completed','export_queries_low_yield','export_warnings'];
   // A RAW file must be able to explain itself: a truncated or low-yield run
@@ -622,14 +650,15 @@
       export_warnings:warnings.join(' | '),
     }};
   };
-  const exportBatchRaw = () => {
+  const exportBatchRaw = async () => {
     const {full,meta}=rawExportMeta();
-    saveCsv(batch.data.map(row=>({...row,...meta})),[...RAW_FIELDS,...RAW_META_FIELDS],
-      full?'geoleadscraper-yandex_maps-RAW_ALL':'geoleadscraper-yandex_maps-RAW_PARTIAL');
+    await saveCsvStream(full?'geoleadscraper-yandex_maps-RAW_ALL':'geoleadscraper-yandex_maps-RAW_PARTIAL',
+      [...RAW_FIELDS,...RAW_META_FIELDS],
+      write => eachStored('listRaw', rows => write(rows.map(row=>({...row,...meta})))));
   };
-  const exportBatchFinal = () => saveCsv(batch.finalData||[],
+  const exportBatchFinal = async () => saveCsvStream('geoleadscraper-yandex_maps-FINAL_FILTERED',
     ['matched_source_district','matched_source_group','matched_source_category','title','address','phone','website','maps_url','source','matched_source_query','matched_source_queries_count','matched_source_records','category_validation','district_validation','district_quality','district_candidates','detected_district','final_status','exclude_reason','place_id','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'],
-    'geoleadscraper-yandex_maps-FINAL_FILTERED');
+    write => eachStored('listFinal', rows => write(rows)));
 
   // -------- BATCH CSV --------
   const detectDelimiter = text => {
@@ -681,21 +710,6 @@
     if(!out.length) throw new Error('В CSV нет непустых поисковых запросов.'); return out;
   };
 
-  const sourceRecords = item => { try { const x=JSON.parse(item.source_records||'[]'); return Array.isArray(x)?x:[]; } catch { return []; } };
-  const uniqueJoined = arr => [...new Set(arr.map(x=>(x||'').trim()).filter(Boolean))].join(' | ');
-  const mergeBatchItem = (existing,item,q) => {
-    const record={district:q.district,group:q.group,category:q.category,query:q.query};
-    const records=existing?sourceRecords(existing):[];
-    const rk=JSON.stringify(record); if(!records.some(x=>JSON.stringify(x)===rk)) records.push(record);
-    return {...(existing||item),source:'yandex_maps',source_district:uniqueJoined(records.map(x=>x.district)),source_group:uniqueJoined(records.map(x=>x.group)),source_category:uniqueJoined(records.map(x=>x.category)),source_query:uniqueJoined(records.map(x=>x.query)),source_records:JSON.stringify(records),source_queries_count:records.length,category_validation:'UNKNOWN',district_validation:'UNKNOWN',detected_district:'',final_status:'RAW',exclude_reason:''};
-  };
-  const mergeAutoIntoBatch = (batchData,autoData,q) => {
-    const byKey=new Map(); batchData.forEach(x=>byKey.set(stableKey(x),x));
-    autoData.forEach(item=>{const key=stableKey(item);byKey.set(key,mergeBatchItem(byKey.get(key),item,q));});
-    const data=[...byKey.values()];
-    const sourceHits=data.reduce((sum,item)=>sum+(item.source_queries_count||sourceRecords(item).length||1),0);
-    return {data,sourceHits};
-  };
   const buildSearchUrl = query => {
     const current=new URL(location.href), m=current.pathname.match(/^\/maps\/([^/]+)\/([^/]+)/i);
     const region=m?.[1]||'213', city=(m?.[2]&&m[2]!=='search')?m[2]:'moscow';
@@ -727,8 +741,15 @@
     const sourceHits=data.reduce((sum,x)=>sum+(x.source_queries_count||sourceRecords(x).length||1),0);return {data,queue,sourceHits};
   };
   const loadRawText = async (text,fileName) => {
-    const x=parseRawCsv(text); await resetAuto(); const cardCache={};x.data.forEach(i=>{if(i.place_id)cardCache[i.place_id]=i;});
-    batch={...blankBatch(),status:BATCH.COMPLETED,fileName:fileName||'raw.csv',queue:x.queue,currentIndex:x.queue.length,completedQueries:x.queue.length,uniqueCount:x.data.length,sourceHits:x.sourceHits,startTime:Date.now(),lastProgressTime:Date.now(),cardCache,data:x.data};await persistBatch();blog('RAW imported',{fileName,rawUnique:x.data.length});
+    const x=parseRawCsv(text);
+    await resetAuto();
+    // An import replaces the registry, as it always has: it exists to refilter
+    // a known RAW, not to blend two of them.
+    await store('clearRaw');
+    for(let i=0;i<x.data.length;i+=STORE_PAGE)await store('putRaw',{records:x.data.slice(i,i+STORE_PAGE),record:null});
+    const totals=await store('recount');
+    batch={...blankBatch(),status:BATCH.COMPLETED,fileName:fileName||'raw.csv',queue:x.queue,currentIndex:x.queue.length,completedQueries:x.queue.length,uniqueCount:totals.rawUnique,sourceHits:totals.rawSourceHits,startTime:Date.now(),lastProgressTime:Date.now()};
+    await persistBatch();blog('RAW imported',{fileName,rawUnique:totals.rawUnique,sourceHits:totals.rawSourceHits});
   };
 
   const loadBatchText = async (text,fileName) => {
@@ -768,14 +789,14 @@
     if(normalize(state.currentSearchQuery)!==normalize(current.query)||state.status!==AUTO.COMPLETED)return;
     batchAdvancing=true;
     try{
-      const merged=mergeAutoIntoBatch(batch.data,state.data,current), data=merged.data, sourceHits=merged.sourceHits, q=[...batch.queue];
+      const totals=await storeTotals(), q=[...batch.queue];
       const queryWarning=state.warning||null;
       q[batch.currentIndex]={...current,status:queryWarning?'COMPLETED_LOW':'COMPLETED',uniqueFound:state.uniqueCount,error:null,warning:queryWarning};
       const warnings=queryWarning?[...(batch.warnings||[]),{query:current.query,unique:state.uniqueCount,message:queryWarning}]:(batch.warnings||[]);
       const next=batch.currentIndex+1, completed=batch.completedQueries+1;if(next<q.length)q[next]={...q[next],status:'RUNNING',error:null};
-      batch={...batch,queue:q,warnings,data,uniqueCount:data.length,sourceHits,completedQueries:completed,currentIndex:next,lastProgressTime:Date.now(),error:null,status:next>=q.length?BATCH.COMPLETED:BATCH.RUNNING,filterStatus:'IDLE',filterPhase:'IDLE',filterError:null,filterStartedAt:null,filterCompletedAt:null,filterStats:blankBatch().filterStats,finalData:[]};
-      await persistBatch();blog('query completed',{index:next,query:current.query,queryRawUnique:state.uniqueCount,totalRawUnique:data.length});
-      if(next>=q.length){blog('completed',{queries:completed,unique:data.length});return;}
+      batch={...batch,queue:q,warnings,...totals,completedQueries:completed,currentIndex:next,lastProgressTime:Date.now(),error:null,status:next>=q.length?BATCH.COMPLETED:BATCH.RUNNING,filterStatus:'IDLE',filterPhase:'IDLE',filterError:null,filterStartedAt:null,filterCompletedAt:null,filterStats:blankBatch().filterStats};
+      await persistBatch();blog('query completed',{index:next,query:current.query,queryRawUnique:state.uniqueCount,totalRawUnique:totals.uniqueCount});
+      if(next>=q.length){blog('completed',{queries:completed,unique:totals.uniqueCount});return;}
       await resetAuto();const n=q[next];blog('next query',{index:next+1,query:n.query});location.assign(buildSearchUrl(n.query));
     }finally{batchAdvancing=false;}
   };
@@ -790,68 +811,76 @@
   const resumeBatch = async () => {if(![BATCH.PAUSED,BATCH.USER_ACTION_REQUIRED].includes(batch.status))return;await patchBatch({status:BATCH.RUNNING,error:null});blog('resumed',{currentIndex:batch.currentIndex});await runBatchCurrent();};
   const stopBatch = async () => {
     if([BATCH.IDLE,BATCH.COMPLETED,BATCH.STOPPED].includes(batch.status))return;
-    const current=batch.queue[batch.currentIndex], autoSnapshot={...state,data:[...state.data]};
     await stopAuto();
-    if(current&&normalize(autoSnapshot.currentSearchQuery)===normalize(current.query)&&autoSnapshot.data.length){
-      const checkpoint=mergeAutoIntoBatch(batch.data,autoSnapshot.data,current);
-      await patchBatch({...checkpoint,uniqueCount:checkpoint.data.length,status:BATCH.STOPPED});
-    }else await patchBatch({status:BATCH.STOPPED});
+    // Nothing to check-point: every card was written to the store as it was
+    // read, so stopping only has to refresh the totals shown in the panel.
+    await patchBatch({...await storeTotals(),status:BATCH.STOPPED});
     blog('stopped',{completed:batch.completedQueries,unique:batch.uniqueCount});
   };
-  const resetBatch = async () => {await resetAuto();batch=blankBatch();try{await chrome.storage.local.remove(BATCH_KEY);}catch{}render();blog('reset');};
+  // The only action that destroys collected data, and it says so on the button.
+  const resetBatch = async () => {
+    await resetAuto();
+    try{await store('clearRaw');}catch(e){blog('store clear failed',e?.message||e);}
+    batch=blankBatch();
+    try{await chrome.storage.local.remove(BATCH_KEY);}catch{}
+    render();blog('reset');
+  };
 
   const filterBatch = async () => {
-    if(!batch.data?.length)throw new Error('RAW-реестр пуст. Сначала выполните BATCH.');
+    const totals=await storeTotals();
+    if(!totals.uniqueCount)throw new Error('RAW-реестр пуст. Сначала выполните BATCH.');
     if(batch.filterStatus==='RUNNING')return;
-    const stats={processed:0,total:batch.data.length,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,ambiguousDistrict:0,matchedSourceRecords:0};
-    const finalData=[];
-    await patchBatch({filterStatus:'RUNNING',filterPhase:'LOADING_GEO',filterError:null,filterStartedAt:Date.now(),filterCompletedAt:null,filterStats:stats,finalData:[]});
-    blog('filter started',{rawUnique:batch.data.length});
+    const stats={processed:0,total:totals.uniqueCount,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,ambiguousDistrict:0,matchedSourceRecords:0};
+    await patchBatch({filterStatus:'RUNNING',filterPhase:'LOADING_GEO',filterError:null,filterStartedAt:Date.now(),filterCompletedAt:null,filterStats:stats,finalCount:0});
+    blog('filter started',{rawUnique:stats.total});
     try{
-      const needsGeo=batch.data.some(item=>sourceRecords(item).some(record=>Object.keys(DISTRICTS).some(d=>normalize(d)===normalize(record.district))));
-      let geoInfo=null;
-      if(needsGeo){const geo=await ensureGeo();geoInfo={source:geo.source,quality:geo.quality||null};}
-      await patchBatch({filterPhase:'FILTERING',geoInfo});
-      for(let i=0;i<batch.data.length;i++){
-        const item=batch.data[i],records=sourceRecords(item),decisions=[];
-        for(const record of records){
-          const decision=await evaluateItem(item,record);
-          decisions.push({record,decision});
+      const geo=await ensureGeo();
+      await store('clearFinal');
+      await patchBatch({filterPhase:'FILTERING',geoInfo:{source:geo.source,quality:geo.quality||null}});
+      // Streams RAW page by page and writes FINAL page by page. Neither the
+      // input nor the output registry is ever held whole in memory.
+      await eachStored('listRaw', async rows => {
+        const accepted=[];
+        for(const item of rows){
+          const records=sourceRecords(item),decisions=[];
+          for(const record of records)decisions.push({record,decision:await evaluateItem(item,record)});
+          const ok=decisions.filter(x=>x.decision.accept);
+          if(ok.length){
+            const uniqueAccepted=[...new Map(ok.map(x=>[JSON.stringify(x.record),x])).values()];
+            const matched=uniqueAccepted.map(x=>x.record);
+            const detected=uniqueJoined(uniqueAccepted.map(x=>x.decision.detectedDistrict||'').filter(Boolean));
+            // Report the validations that were actually computed. A record with
+            // no category or no district in the query is UNKNOWN, not MATCH:
+            // search metadata and verified metadata must stay separate.
+            const categoryValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.categoryValidation))||'UNKNOWN';
+            const districtValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtValidation))||'UNKNOWN';
+            const districtQuality=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtQuality))||'NOT_CHECKED';
+            const candidates=uniqueJoined(uniqueAccepted.flatMap(x=>x.decision.districtCandidates||[]));
+            const ambiguous=uniqueAccepted.some(x=>x.decision.districtQuality==='AMBIGUOUS');
+            if(ambiguous)stats.ambiguousDistrict++;
+            accepted.push({...item,category_validation:categoryValidation,district_validation:districtValidation,district_quality:districtQuality,district_candidates:ambiguous?candidates:'',detected_district:detected,matched_source_district:uniqueJoined(matched.map(x=>x.district)),matched_source_group:uniqueJoined(matched.map(x=>x.group)),matched_source_category:uniqueJoined(matched.map(x=>x.category)),matched_source_query:uniqueJoined(matched.map(x=>x.query)),matched_source_records:JSON.stringify(matched),matched_source_queries_count:matched.length,final_status:'ACCEPTED',exclude_reason:''});
+            stats.accepted++;stats.matchedSourceRecords+=matched.length;
+          }else{
+            const hasCategoryMatch=decisions.some(x=>!x.record.category||x.decision.categoryValidation==='MATCH');
+            const hasCategoryProblem=decisions.some(x=>!!x.record.category&&x.decision.categoryValidation!=='MATCH');
+            const hasNoCoords=decisions.some(x=>x.decision.districtValidation==='NO_COORDINATES');
+            const hasDistrictProblem=decisions.some(x=>!!x.record.district&&x.decision.districtValidation==='MISMATCH');
+            if(hasCategoryMatch&&hasNoCoords&&!hasDistrictProblem)stats.rejectedNoCoords++;
+            else if(hasCategoryMatch&&hasDistrictProblem)stats.rejectedDistrict++;
+            else if(hasCategoryProblem)stats.rejectedCategory++;
+            else stats.rejectedUnknown++;
+          }
+          stats.processed++;
         }
-        const accepted=decisions.filter(x=>x.decision.accept);
-        if(accepted.length){
-          const uniqueAccepted=[...new Map(accepted.map(x=>[JSON.stringify(x.record),x])).values()];
-          const matched=uniqueAccepted.map(x=>x.record);
-          const detected=uniqueJoined(uniqueAccepted.map(x=>x.decision.detectedDistrict||'').filter(Boolean));
-          // Report the validations that were actually computed. A record with
-          // no category or no district in the query is UNKNOWN, not MATCH:
-          // search metadata and verified metadata must stay separate.
-          const categoryValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.categoryValidation))||'UNKNOWN';
-          const districtValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtValidation))||'UNKNOWN';
-          const districtQuality=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtQuality))||'NOT_CHECKED';
-          const candidates=uniqueJoined(uniqueAccepted.flatMap(x=>x.decision.districtCandidates||[]));
-          const ambiguous=uniqueAccepted.some(x=>x.decision.districtQuality==='AMBIGUOUS');
-          if(ambiguous)stats.ambiguousDistrict++;
-          finalData.push({...item,category_validation:categoryValidation,district_validation:districtValidation,district_quality:districtQuality,district_candidates:ambiguous?candidates:'',detected_district:detected,matched_source_district:uniqueJoined(matched.map(x=>x.district)),matched_source_group:uniqueJoined(matched.map(x=>x.group)),matched_source_category:uniqueJoined(matched.map(x=>x.category)),matched_source_query:uniqueJoined(matched.map(x=>x.query)),matched_source_records:JSON.stringify(matched),matched_source_queries_count:matched.length,final_status:'ACCEPTED',exclude_reason:''});
-          stats.accepted++;stats.matchedSourceRecords+=matched.length;
-        }else{
-          const hasCategoryMatch=decisions.some(x=>!x.record.category||x.decision.categoryValidation==='MATCH');
-          const hasCategoryProblem=decisions.some(x=>!!x.record.category&&x.decision.categoryValidation!=='MATCH');
-          const hasNoCoords=decisions.some(x=>x.decision.districtValidation==='NO_COORDINATES');
-          const hasDistrictProblem=decisions.some(x=>!!x.record.district&&x.decision.districtValidation==='MISMATCH');
-          if(hasCategoryMatch&&hasNoCoords&&!hasDistrictProblem)stats.rejectedNoCoords++;
-          else if(hasCategoryMatch&&hasDistrictProblem)stats.rejectedDistrict++;
-          else if(hasCategoryProblem)stats.rejectedCategory++;
-          else stats.rejectedUnknown++;
-        }
-        stats.processed=i+1;
-        if(stats.processed%20===0||stats.processed===stats.total){await patchBatch({filterStats:{...stats},finalData:[...finalData]});await sleep(0);}
-      }
-      await patchBatch({filterStatus:'COMPLETED',filterPhase:'DONE',filterError:null,filterCompletedAt:Date.now(),filterStats:{...stats},finalData});
+        const written=accepted.length?await store('putFinal',{records:accepted}):null;
+        await patchBatch({filterStats:{...stats},finalCount:written?written.finalCount:batch.finalCount});
+        await sleep(0);
+      });
+      await patchBatch({filterStatus:'COMPLETED',filterPhase:'DONE',filterError:null,filterCompletedAt:Date.now(),filterStats:{...stats}});
       blog('filter completed',{rawUnique:stats.total,accepted:stats.accepted,ambiguousDistrict:stats.ambiguousDistrict,noCoords:stats.rejectedNoCoords});
     }catch(e){
       const message=e?.message||String(e);
-      await patchBatch({filterStatus:'ERROR',filterPhase:'ERROR',filterError:message,filterCompletedAt:Date.now(),filterStats:{...stats},finalData});
+      await patchBatch({filterStatus:'ERROR',filterPhase:'ERROR',filterError:message,filterCompletedAt:Date.now(),filterStats:{...stats}});
       blog('filter error',{message,processed:stats.processed,rawUnique:stats.total});
     }
   };
@@ -895,7 +924,7 @@
     if(state.status===AUTO.IDLE)buttons=btn('AUTO COLLECT · ОДИН ЗАПРОС','auto-start');
     else if(state.status===AUTO.RUNNING)buttons=btn('PAUSE','auto-pause')+btn('STOP','auto-stop');
     else if([AUTO.PAUSED,AUTO.USER_ACTION_REQUIRED].includes(state.status))buttons=btn('RESUME','auto-resume')+btn('STOP','auto-stop');
-    else buttons=(state.data.length?btn(`EXPORT (${state.uniqueCount})`,'auto-export'):'')+btn('RESET','auto-reset');
+    else buttons=(batch.uniqueCount?btn(`EXPORT RAW (${batch.uniqueCount})`,'batch-export-raw'):'')+btn('RESET','auto-reset');
     return `<div><div style="font-size:13px;font-weight:700">GeoLeadScraper · Yandex</div><div style="margin-top:6px">Статус: <b>${autoLabel(state.status)}</b></div>${stats}${err}${buttons}</div>`;
   };
 
@@ -950,9 +979,9 @@
     }
     let stats='';
     if(!idle){stats=`<div style="margin-top:6px;line-height:1.5"><div>Запросов: ${batch.queue.length}</div>`;
-      if(running||paused||action||finished||error)stats+=`<div>RAW уникальных организаций: <b>${batch.uniqueCount}</b></div><div>Всего попаданий по запросам: ${batch.sourceHits}</div><div>Карточек во внутреннем кэше: ${Object.keys(batch.cardCache||{}).length}</div>`;stats+='</div>';}
+      if(running||paused||action||finished||error)stats+=`<div>RAW уникальных организаций: <b>${batch.uniqueCount}</b></div><div>Всего попаданий по запросам: ${batch.sourceHits}</div><div>Хранилище: IndexedDB (расширение)</div>`;stats+='</div>';}
     let filter='';
-    if((finished||error)&&batch.data.length){
+    if((finished||error)&&batch.uniqueCount){
       const statusText=filterRunning?`${filterPct}%`:filterCompleted?'ГОТОВО':filterError?'ОШИБКА':'НЕ ЗАПУЩЕНА';
       filter=`<div style="margin-top:8px;padding:9px;border:1px solid #e5e7eb;border-radius:7px;background:#fafafa;font-size:11px">`+
         `<div style="display:flex;justify-content:space-between;gap:8px"><b>ЛОКАЛЬНАЯ ФИЛЬТРАЦИЯ</b><b>${statusText}</b></div>`;
@@ -977,18 +1006,18 @@
     if(paused||action)buttons=btn('RESUME BATCH','batch-resume')+btn('STOP BATCH','batch-stop');
     if(finished||error){
       buttons+=btn('IMPORT RAW CSV','batch-raw-file');
-      if(batch.data.length){buttons+=btn(`EXPORT RAW (${batch.uniqueCount})`,'batch-export-raw');if(!filterRunning)buttons+=btn(filterCompleted||filterError?'ПЕРЕФИЛЬТРОВАТЬ RAW → FINAL':'FILTER RAW → FINAL','batch-filter');if(filterCompleted&&batch.finalData?.length)buttons+=btn(`EXPORT FINAL (${batch.finalData.length})`,'batch-export-final');}
-      if(!filterRunning)buttons+=btn('RESET BATCH','batch-reset');
+      if(batch.uniqueCount){buttons+=btn(`EXPORT RAW (${batch.uniqueCount})`,'batch-export-raw');if(!filterRunning)buttons+=btn(filterCompleted||filterError?'ПЕРЕФИЛЬТРОВАТЬ RAW → FINAL':'FILTER RAW → FINAL','batch-filter');if(filterCompleted&&batch.finalCount)buttons+=btn(`EXPORT FINAL (${batch.finalCount})`,'batch-export-final');}
+      if(!filterRunning)buttons+=btn(`RESET BATCH — УДАЛИТЬ RAW (${batch.uniqueCount})`,'batch-reset','color:#a16207');
     }
-    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.4.2 LOCAL-GEO</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${geoBlock}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-geo-file" type="file" accept=".geojson,.json,application/geo+json,application/json" style="display:none"></div>`;
+    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.5.0 IDB-STORE</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${geoBlock}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-geo-file" type="file" accept=".geojson,.json,application/geo+json,application/json" style="display:none"></div>`;
   };
 
   const render = () => {
     const panel=getPanel();if(!panel)return;
     panel.innerHTML=singleHtml()+batchHtml();
     const actions={
-      'auto-start':startAuto,'auto-pause':pauseAuto,'auto-resume':resumeAuto,'auto-stop':stopAuto,'auto-reset':resetAuto,'auto-export':exportAuto,
-      'batch-start':()=>startBatch().catch(batchFatal),'batch-pause':pauseBatch,'batch-resume':resumeBatch,'batch-stop':stopBatch,'batch-reset':resetBatch,'batch-export-raw':exportBatchRaw,'batch-filter':()=>filterBatch().catch(batchFatal),'batch-export-final':exportBatchFinal,
+      'auto-start':startAuto,'auto-pause':pauseAuto,'auto-resume':resumeAuto,'auto-stop':stopAuto,'auto-reset':resetAuto,
+      'batch-start':()=>startBatch().catch(batchFatal),'batch-pause':pauseBatch,'batch-resume':resumeBatch,'batch-stop':stopBatch,'batch-reset':()=>resetBatch().catch(batchFatal),'batch-export-raw':()=>exportBatchRaw().catch(batchFatal),'batch-filter':()=>filterBatch().catch(batchFatal),'batch-export-final':()=>exportBatchFinal().catch(batchFatal),
       'batch-file':()=>panel.querySelector('#gls-batch-file')?.click(),
       'batch-raw-file':()=>panel.querySelector('#gls-raw-file')?.click(),
       'geo-file':()=>panel.querySelector('#gls-geo-file')?.click(),
@@ -1003,12 +1032,51 @@
     if(geoInput)geoInput.addEventListener('change',async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{await importGeoJsonText(await file.text(),file.name);await patchBatch({geoError:null});}catch(err){await patchBatch({geoError:err?.message||String(err)});}});
   };
 
+  // One-time move of a v1.4.x dataset out of the chrome.storage snapshot and
+  // into IndexedDB. Ordered so that rows carrying provenance win: batch data
+  // first, then the per-query scratch, then the card cache. Merging is keyed
+  // and idempotent, so an interrupted migration simply resumes next time.
+  const migrateLegacyDataset = async stored => {
+    const legacyBatch=stored?.[BATCH_KEY], legacyAuto=stored?.[AUTO_KEY];
+    if(legacyBatch?.storageVersion===2)return null;
+    const batchRows=Array.isArray(legacyBatch?.data)?legacyBatch.data:[];
+    const autoRows=Array.isArray(legacyAuto?.data)?legacyAuto.data:[];
+    const finalRows=Array.isArray(legacyBatch?.finalData)?legacyBatch.finalData:[];
+    const cacheRows=legacyBatch?.cardCache&&typeof legacyBatch.cardCache==='object'?Object.values(legacyBatch.cardCache):[];
+    if(!legacyBatch&&!legacyAuto)return null;
+    if(!batchRows.length&&!autoRows.length&&!cacheRows.length&&!finalRows.length){
+      if(legacyBatch)await chrome.storage.local.set({[BATCH_KEY]:{...legacyBatch,storageVersion:2}});
+      return null;
+    }
+    blog('migrating dataset to IndexedDB',{batchRows:batchRows.length,autoRows:autoRows.length,cacheRows:cacheRows.length,finalRows:finalRows.length});
+    for(let i=0;i<batchRows.length;i+=STORE_PAGE)await store('putRaw',{records:batchRows.slice(i,i+STORE_PAGE),record:null});
+    for(let i=0;i<autoRows.length;i+=STORE_PAGE)await store('putRaw',{records:autoRows.slice(i,i+STORE_PAGE),record:{district:'',group:'',category:'',query:String(legacyAuto?.currentSearchQuery||'')}});
+    for(let i=0;i<cacheRows.length;i+=STORE_PAGE)await store('putRaw',{records:cacheRows.slice(i,i+STORE_PAGE),record:null});
+    for(let i=0;i<finalRows.length;i+=STORE_PAGE)await store('putFinal',{records:finalRows.slice(i,i+STORE_PAGE)});
+    const totals=await store('recount');
+    const nextBatch={...(legacyBatch||blankBatch()),storageVersion:2,uniqueCount:totals.rawUnique,sourceHits:totals.rawSourceHits,finalCount:totals.finalCount};
+    delete nextBatch.data;delete nextBatch.cardCache;delete nextBatch.finalData;
+    const nextAuto=legacyAuto?{...legacyAuto}:null;
+    if(nextAuto)delete nextAuto.data;
+    const write={[BATCH_KEY]:nextBatch};if(nextAuto)write[AUTO_KEY]=nextAuto;
+    await chrome.storage.local.set(write);
+    stored[BATCH_KEY]=nextBatch;if(nextAuto)stored[AUTO_KEY]=nextAuto;
+    blog('dataset migrated',totals);
+    return totals;
+  };
+
   const restore = async () => {
+    let stored=null;
     try{
-      const stored=await chrome.storage.local.get([AUTO_KEY,BATCH_KEY]);
-      if(stored?.[AUTO_KEY]?.status){state={...blankAuto(),...stored[AUTO_KEY],data:Array.isArray(stored[AUTO_KEY].data)?stored[AUTO_KEY].data:[]};seenUrls=new Set(Array.isArray(state.seenUrls)?state.seenUrls:[]);seenPlaceIds=new Set(Array.isArray(state.seenPlaceIds)?state.seenPlaceIds:[]);acceptedKeys=new Set(Array.isArray(state.acceptedKeys)?state.acceptedKeys:[]);if(!acceptedKeys.size)state.data.forEach(x=>acceptedKeys.add(stableKey(x)));}
-      if(stored?.[BATCH_KEY]?.status){batch={...blankBatch(),...stored[BATCH_KEY],queue:Array.isArray(stored[BATCH_KEY].queue)?stored[BATCH_KEY].queue:[],data:Array.isArray(stored[BATCH_KEY].data)?stored[BATCH_KEY].data:[],finalData:Array.isArray(stored[BATCH_KEY].finalData)?stored[BATCH_KEY].finalData:[],filterStats:{...blankBatch().filterStats,...(stored[BATCH_KEY].filterStats||{})},warnings:Array.isArray(stored[BATCH_KEY].warnings)?stored[BATCH_KEY].warnings:[],cardCache:stored[BATCH_KEY].cardCache&&typeof stored[BATCH_KEY].cardCache==='object'?stored[BATCH_KEY].cardCache:{}};if(batch.filterStatus==='RUNNING'){batch.filterStatus='ERROR';batch.filterPhase='ERROR';batch.filterError='Локальная фильтрация была прервана перезагрузкой страницы. RAW-данные сохранены; запустите фильтрацию ещё раз.';}}
-    }catch{}
+      stored=await chrome.storage.local.get([AUTO_KEY,BATCH_KEY]);
+      // Never let a migration failure hide the control state - the registry is
+      // still in chrome.storage at that point and is not touched on failure.
+      try{await migrateLegacyDataset(stored);}catch(e){blog('dataset migration failed',e?.message||e);}
+      if(stored?.[AUTO_KEY]?.status){state={...blankAuto(),...stored[AUTO_KEY]};delete state.data;seenUrls=new Set(Array.isArray(state.seenUrls)?state.seenUrls:[]);seenPlaceIds=new Set(Array.isArray(state.seenPlaceIds)?state.seenPlaceIds:[]);acceptedKeys=new Set(Array.isArray(state.acceptedKeys)?state.acceptedKeys:[]);}
+      if(stored?.[BATCH_KEY]?.status){batch={...blankBatch(),...stored[BATCH_KEY],queue:Array.isArray(stored[BATCH_KEY].queue)?stored[BATCH_KEY].queue:[],filterStats:{...blankBatch().filterStats,...(stored[BATCH_KEY].filterStats||{})},warnings:Array.isArray(stored[BATCH_KEY].warnings)?stored[BATCH_KEY].warnings:[]};delete batch.data;delete batch.cardCache;delete batch.finalData;if(batch.filterStatus==='RUNNING'){batch.filterStatus='ERROR';batch.filterPhase='ERROR';batch.filterError='Локальная фильтрация была прервана перезагрузкой страницы. RAW-данные сохранены; запустите фильтрацию ещё раз.';}}
+    }catch(e){blog('restore failed',e?.message||e);}
+    // The store is the source of truth for the totals, not the snapshot.
+    try{batch={...batch,...await storeTotals()};}catch(e){blog('store unavailable',e?.message||e);}
     render();
 
     // Batch owns navigation while active. Do not apply the single-query mismatch stop rule.

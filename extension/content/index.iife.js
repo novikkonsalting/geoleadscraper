@@ -104,6 +104,83 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
 `,m=d.charCodeAt(0),g=new RegExp((f=="|"?"\\|":f)+"+$"),x="",_=[];l.dense=Array.isArray(t);for(var y=l.skipHidden&&t["!cols"]||[],E=l.skipHidden&&t["!rows"]||[],b=u.s.c;b<=u.e.c;++b)(y[b]||{}).hidden||(_[b]=sr(b));for(var p=0,w=u.s.r;w<=u.e.r;++w)(E[w]||{}).hidden||(x=D3(t,u,w,_,c,m,f,l),x!=null&&(l.strip&&(x=x.replace(g,"")),(x||l.blankrows!==!1)&&n.push((p++?d:"")+x)));return delete l.dense,n.join("")}function kd(t,a){a||(a={}),a.FS="	",a.RS=`
 `;var n=Cf(t,a);return n}function R3(t){var a="",n,l="";if(t==null||t["!ref"]==null)return[];var u=Tt(t["!ref"]),f="",c=[],d,m=[],g=Array.isArray(t);for(d=u.s.c;d<=u.e.c;++d)c[d]=sr(d);for(var x=u.s.r;x<=u.e.r;++x)for(f=$t(x),d=u.s.c;d<=u.e.c;++d)if(a=c[d]+f,n=g?(t[x]||[])[d]:t[a],l="",n!==void 0){if(n.F!=null){if(a=n.F,!n.f)continue;l=n.f,a.indexOf(":")==-1&&(a=a+":"+a)}if(n.f!=null)l=n.f;else{if(n.t=="z")continue;if(n.t=="n"&&n.v!=null)l=""+n.v;else if(n.t=="b")l=n.v?"TRUE":"FALSE";else if(n.w!==void 0)l="'"+n.w;else{if(n.v===void 0)continue;n.t=="s"?l="'"+n.v:l=""+n.v}}m[m.length]=a+"="+l}return m}function Ud(t,a,n){var l=n||{},u=+!l.skipHeader,f=t||{},c=0,d=0;if(f&&l.origin!=null)if(typeof l.origin=="number")c=l.origin;else{var m=typeof l.origin=="string"?Xt(l.origin):l.origin;c=m.r,d=m.c}var g,x={s:{c:0,r:0},e:{c:d,r:c+a.length-1+u}};if(f["!ref"]){var _=Tt(f["!ref"]);x.e.c=Math.max(x.e.c,_.e.c),x.e.r=Math.max(x.e.r,_.e.r),c==-1&&(c=_.e.r+1,x.e.r=c+a.length-1+u)}else c==-1&&(c=0,x.e.r=a.length-1+u);var y=l.header||[],E=0;a.forEach(function(p,w){Zt(p).forEach(function(H){(E=y.indexOf(H))==-1&&(y[E=y.length]=H);var G=p[H],U="z",q="",se=lt({c:d+E,r:c+w+u});g=Hl(f,se),G&&typeof G=="object"&&!(G instanceof Date)?f[se]=G:(typeof G=="number"?U="n":typeof G=="boolean"?U="b":typeof G=="string"?U="s":G instanceof Date?(U="d",l.cellDates||(U="n",G=vr(G)),q=l.dateNF||Ct[14]):G===null&&l.nullError&&(U="e",G=0),g?(g.t=U,g.v=G,delete g.w,delete g.R,q&&(g.z=q)):f[se]=g={t:U,v:G},q&&(g.z=q))})}),x.e.c=Math.max(x.e.c,d+y.length-1);var b=$t(c);if(u)for(E=0;E<y.length;++E)f[sr(E+d)+b]={t:"s",v:y[E]};return f["!ref"]=Bt(x),f}function N3(t,a){return Ud(null,t,a)}function Hl(t,a,n){if(typeof a=="string"){if(Array.isArray(t)){var l=Xt(a);return t[l.r]||(t[l.r]=[]),t[l.r][l.c]||(t[l.r][l.c]={t:"z"})}return t[a]||(t[a]={t:"z"})}return typeof a!="number"?Hl(t,lt(a)):Hl(t,lt({r:a,c:n||0}))}function M3(t,a){if(typeof a=="number"){if(a>=0&&t.SheetNames.length>a)return a;throw new Error("Cannot find sheet # "+a)}else if(typeof a=="string"){var n=t.SheetNames.indexOf(a);if(n>-1)return n;throw new Error("Cannot find sheet name |"+a+"|")}else throw new Error("Cannot find sheet |"+a+"|")}function F3(){return{SheetNames:[],Sheets:{}}}function L3(t,a,n,l){var u=1;if(!n)for(;u<=65535&&t.SheetNames.indexOf(n="Sheet"+u)!=-1;++u,n=void 0);if(!n||t.SheetNames.length>=65535)throw new Error("Too many worksheets");if(l&&t.SheetNames.indexOf(n)>=0){var f=n.match(/(^.*?)(\d+)$/);u=f&&+f[2]||0;var c=f&&f[1]||n;for(++u;u<=65535&&t.SheetNames.indexOf(n=c+u)!=-1;++u);}if(Sd(n),t.SheetNames.indexOf(n)>=0)throw new Error("Worksheet with name |"+n+"| already exists!");return t.SheetNames.push(n),t.Sheets[n]=a,n}function B3(t,a,n){t.Workbook||(t.Workbook={}),t.Workbook.Sheets||(t.Workbook.Sheets=[]);var l=M3(t,a);switch(t.Workbook.Sheets[l]||(t.Workbook.Sheets[l]={}),n){case 0:case 1:case 2:break;default:throw new Error("Bad sheet visibility setting "+n)}t.Workbook.Sheets[l].Hidden=n}function k3(t,a){return t.z=a,t}function zd(t,a,n){return a?(t.l={Target:a},n&&(t.l.Tooltip=n)):delete t.l,t}function U3(t,a,n){return zd(t,"#"+a,n)}function z3(t,a,n){t.c||(t.c=[]),t.c.push({t:a,a:n||"SheetJS"})}function I3(t,a,n,l){for(var u=typeof a!="string"?a:Tt(a),f=typeof a=="string"?a:Bt(a),c=u.s.r;c<=u.e.r;++c)for(var d=u.s.c;d<=u.e.c;++d){var m=Hl(t,c,d);m.t="n",m.F=f,delete m.v,c==u.s.r&&d==u.s.c&&(m.f=n,l&&(m.D=!0))}return t}var Df={encode_col:sr,encode_row:$t,encode_cell:lt,encode_range:Bt,decode_col:cf,decode_row:ff,split_cell:t_,decode_cell:Xt,decode_range:Nr,format_cell:On,sheet_add_aoa:y1,sheet_add_json:Ud,sheet_add_dom:Cd,aoa_to_sheet:vi,json_to_sheet:N3,table_to_sheet:Dd,table_to_book:c3,sheet_to_csv:Cf,sheet_to_txt:kd,sheet_to_json:xs,sheet_to_html:Od,sheet_to_formulae:R3,sheet_to_row_object_array:xs,sheet_get_cell:Hl,book_new:F3,book_append_sheet:L3,book_set_sheet_visibility:B3,cell_set_number_format:k3,cell_set_hyperlink:zd,cell_set_internal_link:U3,cell_add_comment:z3,sheet_set_array_formula:I3,consts:{SHEET_VISIBLE:0,SHEET_HIDDEN:1,SHEET_VERY_HIDDEN:2}};const H3=t=>{const a=Object.values(pt),n=[];if(!Array.isArray(t))return n;for(const l of t)if(a.includes(l))n.push(l);else continue;return n},Rf=({data:t,fields:a})=>(a.length&&(t=t.map(n=>Object.fromEntries(Object.entries(n).filter(([l])=>a.includes(l))))),t),G3=t=>{const{format:a=Ra.CSV,prefix:n="data-export",data:l,fields:u}=t,f=pl().format("YYYYMMDDHHmmss"),c=`${n}-${f}`;switch(a){case Ra.CSV:return P3({filename:c,data:l,fields:u});case Ra.JSON:return j3({filename:c,data:l,fields:u});case Ra.XLSX:return Y3({filename:c,data:l,fields:u})}},P3=({filename:t,data:a=[],fields:n=[]})=>{a=Rf({data:a,fields:n});const l=Zp({fields:n,data:a});if(l){const u=new Blob([l],{type:"text/csv;charset=utf-8;"}),f=URL.createObjectURL(u),c=document.createElement("a");c.setAttribute("href",f),c.setAttribute("download",`${t}.csv`),document.body.appendChild(c),c.click(),document.body.removeChild(c),URL.revokeObjectURL(f)}},j3=({filename:t,data:a=[],fields:n=[]})=>{a=Rf({data:a,fields:n});const l=JSON.stringify(a,null,2),u=new Blob([l],{type:"application/json"}),f=URL.createObjectURL(u),c=document.createElement("a");c.setAttribute("href",f),c.setAttribute("download",`${t}.json`),document.body.appendChild(c),c.click(),document.body.removeChild(c),URL.revokeObjectURL(f)},Y3=({filename:t,data:a=[],fields:n=[]})=>{a=Rf({data:a,fields:n});const l=Df.book_new(),u=Df.json_to_sheet(a);Df.book_append_sheet(l,u,"Sheet1");const f=Ld(l,{bookType:"xlsx",type:"array"}),c=new Blob([f],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}),d=URL.createObjectURL(c),m=document.createElement("a");m.setAttribute("href",d),m.setAttribute("download",`${t}.xlsx`),document.body.appendChild(m),m.click(),document.body.removeChild(m),URL.revokeObjectURL(d)},X3=Or.createContext(void 0),Id={APP_NAME:"geoleadscraper",HOME_PAGE_URL:"https://geoleadscraper.com"},Hd=({size:t="base"})=>{let a="spinner";switch(t){case"base":a=Kt(a,"spinner-base");break;case"sm":a=Kt(a,"spinner-sm");break}return Ue.jsx("div",{role:"status",children:Ue.jsxs("svg",{"aria-hidden":"true",className:a,viewBox:"0 0 100 101",fill:"none",xmlns:"http://www.w3.org/2000/svg",children:[Ue.jsx("path",{d:"M100 50.5908C100 78.2051 77.6142 100.591 50 100.591C22.3858 100.591 0 78.2051 0 50.5908C0 22.9766 22.3858 0.59082 50 0.59082C77.6142 0.59082 100 22.9766 100 50.5908ZM9.08144 50.5908C9.08144 73.1895 27.4013 91.5094 50 91.5094C72.5987 91.5094 90.9186 73.1895 90.9186 50.5908C90.9186 27.9921 72.5987 9.67226 50 9.67226C27.4013 9.67226 9.08144 27.9921 9.08144 50.5908Z",fill:"currentColor"}),Ue.jsx("path",{d:"M93.9676 39.0409C96.393 38.4038 97.8624 35.9116 97.0079 33.5539C95.2932 28.8227 92.871 24.3692 89.8167 20.348C85.8452 15.1192 80.8826 10.7238 75.2124 7.41289C69.5422 4.10194 63.2754 1.94025 56.7698 1.05124C51.7666 0.367541 46.6976 0.446843 41.7345 1.27873C39.2613 1.69328 37.813 4.19778 38.4501 6.62326C39.0873 9.04874 41.5694 10.4717 44.0505 10.1071C47.8511 9.54855 51.7191 9.52689 55.5402 10.0491C60.8642 10.7766 65.9928 12.5457 70.6331 15.2552C75.2735 17.9648 79.3347 21.5619 82.5849 25.841C84.9175 28.9121 86.7997 32.2913 88.1811 35.8758C89.083 38.2158 91.5421 39.6781 93.9676 39.0409Z",fill:"currentFill"})]})})},Oi=({children:t,loading:a,size:n="base",variant:l="primary",disabled:u=!1,onClick:f,className:c})=>{let d="button";switch(l){case"primary":d=Kt(d,"button-primary");break;case"secondary":d=Kt(d,"button-secondary");break;case"upgrade":d=Kt(d,"button-upgrade");break}switch(n){case"base":d=Kt(d,"button-base");break;case"sm":d=Kt(d,"button-sm");break;case"xs":d=Kt(d,"button-xs");break}return a===!0&&(d=Kt(d,"button-loading")),u===!0&&(d=Kt(d,"button-disabled")),c&&(d=Kt(d,c)),Ue.jsx("button",{className:d,disabled:u||a,onClick:f,children:a?Ue.jsx(Hd,{}):t})},Gd=({children:t,...a})=>{let n="w-full flex flex-col gap-2";return a.className&&(n=Kt(n,a.className)),Ue.jsx("div",{className:n,children:t})},V3=({children:t})=>{const[a,n]=Or.useState({});return Ue.jsx(X3.Provider,{value:{state:a,setState:l=>{n(u=>({...u,...l(u)}))}},children:t})},q3=({size:t="base"})=>{let a="logo";switch(t){case"base":a=Kt(a,"logo-base");break;case"sm":a=Kt(a,"logo-sm");break}return Ue.jsx("div",{className:a,children:Ue.jsx("span",{children:Id.APP_NAME})})},{APP_NAME:K3,HOME_PAGE_URL:W3}=Id,Z3=()=>Ue.jsxs("span",{children:["Powered by"," ",Ue.jsx("a",{href:W3,target:"_blank",rel:"noreferrer",className:"text-semibold underline capitalize",children:K3})]}),Pd=Or.createContext({context:{position:"right",platform:null,mode:I0.INTERVAL,search:null,data:[],results:0,page:1,pages:0,current:0,total:0,initiated:!1,paused:!1,completed:!1,extracting:!1,extract_websites:!1,auto_download:!1,export_format:Ra.CSV,export_fields:[],request_interval:5e3},setContext:()=>{}});var Ci={APP_VERSION:"1.0.0",APP_NAME:"geoleadscraper",EXPORT_FILE_NAME_PREFIX:"geoleadscraper",EXTRACT_LIMIT:1e4,DEFAULT_BACKEND_URL:"http://localhost:5050",HOME_PAGE_URL:"https://geoleadscraper.com",FAQ_URL:"https://geoleadscraper.com/faq",GUIDE_URL:"https://geoleadscraper.com/how-to-use",CHANGELOG_URL:"https://github.com/geoleadscraper/geoleadscraper/releases",REQUEST_INTERVAL:{GOOGLE_MAPS:2e3,YANDEX_MAPS:2e3,GIS_MAPS:2e3},CONTENT_SCRIPT_DOMAINS:["google.com","google.ac","google.ad","google.ae","google.al","google.am","google.as","google.at","google.az","google.ba","google.be","google.bf","google.bg","google.bi","google.bj","google.bs","google.bt","google.by","google.ca","google.cat","google.cc","google.cd","google.cf","google.cg","google.ch","google.ci","google.cl","google.cm","google.cn","google.co.ao","google.co.bw","google.co.ck","google.co.cr","google.co.id","google.co.il","google.co.in","google.co.jp","google.co.ke","google.co.kr","google.co.ls","google.co.ma","google.co.mz","google.co.nz","google.co.th","google.co.tz","google.co.ug","google.co.uk","google.co.uz","google.co.ve","google.co.vi","google.co.za","google.co.zm","google.co.zw","google.com.af","google.com.ag","google.com.ai","google.com.ar","google.com.au","google.com.bd","google.com.bh","google.com.bn","google.com.bo","google.com.br","google.com.bz","google.com.co","google.com.cu","google.com.cy","google.com.do","google.com.ec","google.com.eg","google.com.et","google.com.fj","google.com.gh","google.com.gi","google.com.gt","google.com.hk","google.com.jm","google.com.kh","google.com.kw","google.com.lb","google.com.lc","google.com.ly","google.com.mm","google.com.mt","google.com.mx","google.com.my","google.com.na","google.com.nf","google.com.ng","google.com.ni","google.com.np","google.com.om","google.com.pa","google.com.pe","google.com.pg","google.com.ph","google.com.pk","google.com.pr","google.com.py","google.com.qa","google.com.sa","google.com.sb","google.com.sg","google.com.sl","google.com.sv","google.com.tj","google.com.tr","google.com.tw","google.com.ua","google.com.uy","google.com.vc","google.com.vn","google.cv","google.cz","google.de","google.dj","google.dk","google.dm","google.dz","google.ee","google.es","google.fi","google.fm","google.fr","google.ga","google.ge","google.gf","google.gg","google.gl","google.gm","google.gp","google.gr","google.gy","google.hn","google.hr","google.ht","google.hu","google.ie","google.im","google.io","google.iq","google.is","google.it","google.je","google.jo","google.kg","google.ki","google.kz","google.la","google.li","google.lk","google.lt","google.lu","google.lv","google.md","google.me","google.mg","google.mk","google.ml","google.mn","google.ms","google.mu","google.mv","google.mw","google.ne","google.nl","google.no","google.nr","google.nu","google.pl","google.pn","google.ps","google.pt","google.ro","google.rs","google.ru","google.rw","google.sc","google.se","google.sh","google.si","google.sk","google.sm","google.sn","google.so","google.sr","google.st","google.td","google.tg","google.tk","google.tl","google.tm","google.tn","google.to","google.tt","google.vg","google.vu","google.ws","yandex.com","yandex.ru","yandex.by","yandex.kz","yandex.ua","yandex.uz","yandex.eu","2gis.com","2gis.ru","2gis.kz","2gis.by","2gis.az","2gis.kg","2gis.uz"]};const{APP_VERSION:Q3}=Ci,$3=()=>{const{context:t,setContext:a}=Or.useContext(Pd),{position:n,platform:l}=t||{},u=l?[nt.GOOGLE_MAPS,nt.YANDEX_MAPS].includes(l):!1,f={onPositionToggle:()=>{const{position:c}=t||{};a({...t,position:c==="right"?"left":"right"})}};return Ue.jsxs("div",{className:"w-full flex flex-row justify-between text-xxs text-gray-500",children:[Ue.jsxs("span",{className:"text-gray-400",children:["v",Q3]}),Ue.jsx(Z3,{}),Ue.jsx("span",{children:u&&Ue.jsx("button",{className:"cursor-pointer",onClick:f.onPositionToggle,children:n==="right"?"⬅️":"➡️"})})]})},J3=({children:t})=>Ue.jsxs("div",{className:"w-full flex flex-col p-2",children:[t,Ue.jsx("div",{className:"w-full mt-8",children:Ue.jsx($3,{})})]}),{EXTRACT_LIMIT:ew}=Ci,Nf="mapscan-frame",tw=({position:t,platform:a})=>{const n="fixed shadow-md top-[60px] z-50 flex text-black bg-white border border-solid border-gray-200 rounded-md w-[325px] h-auto";switch(t){case"right":return Kt(n,"right-[20px]");case"left":return a===nt.GOOGLE_MAPS?Kt(n,"left-[501px]"):Kt(n,"left-[428px]");default:return n}},Mf=({platform:t})=>{let a=1e3;if(!t)return a;switch(t){case nt.GOOGLE_MAPS:a=Ci.REQUEST_INTERVAL.GOOGLE_MAPS;break;case nt.YANDEX_MAPS:a=Ci.REQUEST_INTERVAL.YANDEX_MAPS;break;case nt.GIS:a=Ci.REQUEST_INTERVAL.GIS_MAPS;break}return a},rw=async t=>{const a=Date.now()+2e4;if(t!==nt.GOOGLE_MAPS){await Na(3e3);return}for(;Date.now()<a;){const n=await mh().catch(()=>null);if(n&&n.lat&&n.long&&n.search)return;await Na(1e3)}},nw=({platform:t})=>{const[a,n]=Or.useState({platform:t,mode:I0.INTERVAL,position:"left",search:null,results:0,data:[],initiated:!1,paused:!1,extracting:!1,completed:!1,page:1,pages:0,current:0,total:0,backend_available:!1,extract_websites:!1,request_interval:0,auto_download:!1,export_format:Ra.CSV,export_fields:[]}),[l,u]=Or.useState(!0),f=Or.useRef(a),c=Or.useRef(null),d=Or.useRef(null),{completed:m,initiated:g,results:x,position:_,auto_download:y,extracting:E,backend_available:b}=a,p=tw({platform:t,position:_}),w=async j=>{const P=!!(a.backend_available&&j?.extractWebsites),V=document.location.href,ge=j?.page?j.page:f.current.page,_e=d.current?.limit||ew,le=c.current,z=Mf({platform:t});let Z={};switch(t){case nt.GOOGLE_MAPS:Z=await mh().catch(()=>null),await gh({query:Z,state:{value:a,update:ue=>n(pe=>({...pe,...ue(pe)}))},timeout:z,extractWebsites:P,page:ge,limit:_e,controller:le,complete:H,onRequestComplete:G});break;case nt.YANDEX_MAPS:await xh({state:{value:a,update:ue=>n(pe=>({...pe,...ue(pe)}))},timeout:z,page:ge,limit:_e,controller:le,extractWebsites:P,document:$p(Nf),complete:H,onRequestComplete:G});break;case nt.GIS:await vh({state:{value:a,update:ue=>n(pe=>({...pe,...ue(pe)}))},url:V,timeout:z,extractWebsites:P,limit:_e,page:ge,controller:le,complete:H,onRequestComplete:G});break}},H=({results:j})=>{const P=c.current;P&&P.abort(),at("extract completed",{platform:t,results:j}),n(V=>({...V,extracting:!1,paused:!1,completed:!0}))},G=async({data:j,results:P})=>{const V=Mf({platform:t});at("extract request",{platform:t,interval:V,data:j,results:P})},U=()=>{const j=c.current;at("extract paused",{platform:t,results:a.results}),j&&j.abort(),n(P=>({...P,extracting:!1,paused:!0}))},q=async()=>{const j=c.current;at("extract stopped",{platform:t,results:a.results}),j&&j.abort(),n(P=>({...P,initiated:!0,completed:!0,extracting:!1,paused:!1}))},se=()=>{let j="left",P="";switch(t){case nt.GOOGLE_MAPS:case nt.YANDEX_MAPS:j="left",P=I0.INTERVAL;break;case nt.GIS:j="right",P=I0.PAGE;break}n(V=>({...V,position:j,mode:P}))},ce=async()=>{const{data:j}=await Wn({type:Tn.CHECK_BACKEND});n(P=>({...P,backend_available:!!j?.available}))},R=async()=>{const{data:j}=await Wn({type:Tn.GET_STORE}),{export_format:P,auto_download:V,export_fields:ge,request_interval:_e}=j||{},le=(ge||[]).some(z=>[pt.EMAIL,pt.PHONES,pt.SOCIALS].includes(z));n(z=>({...z,extract_websites:le,export_format:P,auto_download:V,export_fields:Array.isArray(ge)?ge:[],request_interval:_e}))},W=async()=>{u(!0),se(),await Promise.all([R(),ce()]),u(!1)},X={pause:U,stop:q,start:async()=>{const P=Mf({platform:t}),V=a.extract_websites||!1;at("extract",{platform:t,interval:P}),c.current=new AbortController,n(ge=>({...ge,initiated:!0,extracting:!0,paused:!1,page:1})),await w({page:1,extractWebsites:V})},extractStartClick:async()=>{n(j=>({...j,initiated:!0,extracting:!0})),t===nt.YANDEX_MAPS&&await Qp({url:document.location.href,id:Nf}),X.start()},resume:async()=>{const j=a.page+1,P=a.extract_websites||!1;c.current=new AbortController,at("extract resume",{page:j}),n(V=>({...V,initiated:!0,extracting:!0,paused:!1})),await w({page:j,extractWebsites:P})},reset:()=>{n(P=>({...P,initiated:!1,extracting:!1,completed:!1,paused:!1,results:0,data:[],page:1}));const j=document.getElementById(Nf);j&&j.remove()},export:async()=>{try{const P=(await Wn({type:Tn.GET_STORE}))?.data||{},V=P.export_format||a.export_format||Ra.CSV;let ge=H3(Array.isArray(P.export_fields)?P.export_fields:a.export_fields);ge.length===0&&(ge=[...Up]);const _e=[Ci.EXPORT_FILE_NAME_PREFIX,t].join("-"),le=a.data?.map(z=>{const Z={};for(const ue of ge)ue in z&&(Z[ue]=z[ue]);return Z})||[];at("export",{format:V,results:le.length,fields:ge}),G3({format:V,prefix:_e,fields:ge,data:le})}catch(j){console.error("geoleadscraper export error:",j?.message,j?.stack)}}};return Or.useEffect(()=>{f.current=a},[a]),Or.useEffect(()=>{if(m){if(d.current){const j=d.current;d.current=null,Wn({type:Tn.SUBMIT_JOB_RESULTS,payload:{jobId:j.id,data:a.data,results:a.results}});return}y&&X.export()}},[m]),Or.useEffect(()=>{let j=!1;return(async()=>{const V=(await Wn({type:Tn.CONTENT_READY}).catch(()=>({data:null})))?.data?.job;!V||j||(d.current={id:V.id,limit:V.limit,extractContacts:!!V.extractContacts},at("auto-collect job",{id:V.id,platform:t}),await rw(t),!j&&X.extractStartClick())})(),()=>{j=!0}},[]),Or.useEffect(()=>{W();const j=setInterval(()=>{R()},500);return()=>{clearInterval(j)}},[]),Ue.jsx(V3,{children:Ue.jsx(Pd.Provider,{value:{context:a,setContext:j=>{n(P=>({...P,...j}))}},children:l?Ue.jsx(Ue.Fragment,{}):Ue.jsx("div",{className:p,children:Ue.jsx(J3,{children:Ue.jsx("div",{className:"w-full flex flex-col gap-2",children:Ue.jsxs("div",{className:"w-full flex flex-col",children:[Ue.jsxs("div",{className:"w-full flex flex-row justify-between items-center",children:[Ue.jsx(q3,{size:"sm"}),Ue.jsx("div",{children:E&&Ue.jsx(Hd,{})})]}),Ue.jsxs("div",{className:"mt-4 w-full flex flex-col gap-2 text-sm",children:[E?Ue.jsx("div",{children:Ue.jsxs("span",{children:["Extracting ",x>=1?`(${x})`:".."]})}):g?Ue.jsx("div",{children:Ue.jsxs("span",{children:["Results: ",x]})}):Ue.jsx(Ue.Fragment,{}),Ue.jsx("div",{className:"mt-2 flex flex-col",children:g?Ue.jsx(Gd,{children:E?Ue.jsxs(Ue.Fragment,{children:[t===nt.GOOGLE_MAPS&&Ue.jsx(Oi,{variant:"secondary",size:"sm",onClick:X.pause,children:"Pause"}),(t===nt.YANDEX_MAPS||t===nt.GIS)&&Ue.jsx(Oi,{variant:"secondary",size:"sm",onClick:X.stop,children:"Stop"})]}):Ue.jsxs(Ue.Fragment,{children:[Ue.jsxs(Oi,{variant:"secondary",size:"sm",onClick:X.export,children:["Export results (",x,")"]}),t===nt.GOOGLE_MAPS&&!m&&Ue.jsx(Oi,{variant:"secondary",size:"sm",onClick:X.resume,children:"Resume"}),Ue.jsx(Oi,{variant:"secondary",size:"sm",onClick:X.reset,children:"Reset"})]})}):Ue.jsx(Gd,{children:Ue.jsx(Oi,{variant:"secondary",size:"sm",onClick:X.extractStartClick,children:"Start extracting"})})}),!g&&a.extract_websites&&!b&&Ue.jsx("span",{className:"mt-1 text-xs text-amber-700",children:"Start the local backend to also collect website contacts."})]})]})})})})})})},aw='*,:before,:after{--tw-border-spacing-x: 0;--tw-border-spacing-y: 0;--tw-translate-x: 0;--tw-translate-y: 0;--tw-rotate: 0;--tw-skew-x: 0;--tw-skew-y: 0;--tw-scale-x: 1;--tw-scale-y: 1;--tw-pan-x: ;--tw-pan-y: ;--tw-pinch-zoom: ;--tw-scroll-snap-strictness: proximity;--tw-gradient-from-position: ;--tw-gradient-via-position: ;--tw-gradient-to-position: ;--tw-ordinal: ;--tw-slashed-zero: ;--tw-numeric-figure: ;--tw-numeric-spacing: ;--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width: 0px;--tw-ring-offset-color: #fff;--tw-ring-color: rgb(59 130 246 / .5);--tw-ring-offset-shadow: 0 0 #0000;--tw-ring-shadow: 0 0 #0000;--tw-shadow: 0 0 #0000;--tw-shadow-colored: 0 0 #0000;--tw-blur: ;--tw-brightness: ;--tw-contrast: ;--tw-grayscale: ;--tw-hue-rotate: ;--tw-invert: ;--tw-saturate: ;--tw-sepia: ;--tw-drop-shadow: ;--tw-backdrop-blur: ;--tw-backdrop-brightness: ;--tw-backdrop-contrast: ;--tw-backdrop-grayscale: ;--tw-backdrop-hue-rotate: ;--tw-backdrop-invert: ;--tw-backdrop-opacity: ;--tw-backdrop-saturate: ;--tw-backdrop-sepia: ;--tw-contain-size: ;--tw-contain-layout: ;--tw-contain-paint: ;--tw-contain-style: }::backdrop{--tw-border-spacing-x: 0;--tw-border-spacing-y: 0;--tw-translate-x: 0;--tw-translate-y: 0;--tw-rotate: 0;--tw-skew-x: 0;--tw-skew-y: 0;--tw-scale-x: 1;--tw-scale-y: 1;--tw-pan-x: ;--tw-pan-y: ;--tw-pinch-zoom: ;--tw-scroll-snap-strictness: proximity;--tw-gradient-from-position: ;--tw-gradient-via-position: ;--tw-gradient-to-position: ;--tw-ordinal: ;--tw-slashed-zero: ;--tw-numeric-figure: ;--tw-numeric-spacing: ;--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width: 0px;--tw-ring-offset-color: #fff;--tw-ring-color: rgb(59 130 246 / .5);--tw-ring-offset-shadow: 0 0 #0000;--tw-ring-shadow: 0 0 #0000;--tw-shadow: 0 0 #0000;--tw-shadow-colored: 0 0 #0000;--tw-blur: ;--tw-brightness: ;--tw-contrast: ;--tw-grayscale: ;--tw-hue-rotate: ;--tw-invert: ;--tw-saturate: ;--tw-sepia: ;--tw-drop-shadow: ;--tw-backdrop-blur: ;--tw-backdrop-brightness: ;--tw-backdrop-contrast: ;--tw-backdrop-grayscale: ;--tw-backdrop-hue-rotate: ;--tw-backdrop-invert: ;--tw-backdrop-opacity: ;--tw-backdrop-saturate: ;--tw-backdrop-sepia: ;--tw-contain-size: ;--tw-contain-layout: ;--tw-contain-paint: ;--tw-contain-style: }*,:before,:after{box-sizing:border-box;border-width:0;border-style:solid;border-color:#e5e7eb}:before,:after{--tw-content: ""}html,:host{line-height:1.5;-webkit-text-size-adjust:100%;-moz-tab-size:4;-o-tab-size:4;tab-size:4;font-family:ui-sans-serif,system-ui,sans-serif,"Apple Color Emoji","Segoe UI Emoji",Segoe UI Symbol,"Noto Color Emoji";font-feature-settings:normal;font-variation-settings:normal;-webkit-tap-highlight-color:transparent}body{margin:0;line-height:inherit}hr{height:0;color:inherit;border-top-width:1px}abbr:where([title]){-webkit-text-decoration:underline dotted;text-decoration:underline dotted}h1,h2,h3,h4,h5,h6{font-size:inherit;font-weight:inherit}a{color:inherit;text-decoration:inherit}b,strong{font-weight:bolder}code,kbd,samp,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,Liberation Mono,Courier New,monospace;font-feature-settings:normal;font-variation-settings:normal;font-size:1em}small{font-size:80%}sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}sub{bottom:-.25em}sup{top:-.5em}table{text-indent:0;border-color:inherit;border-collapse:collapse}button,input,optgroup,select,textarea{font-family:inherit;font-feature-settings:inherit;font-variation-settings:inherit;font-size:100%;font-weight:inherit;line-height:inherit;letter-spacing:inherit;color:inherit;margin:0;padding:0}button,select{text-transform:none}button,input:where([type=button]),input:where([type=reset]),input:where([type=submit]){-webkit-appearance:button;background-color:transparent;background-image:none}:-moz-focusring{outline:auto}:-moz-ui-invalid{box-shadow:none}progress{vertical-align:baseline}::-webkit-inner-spin-button,::-webkit-outer-spin-button{height:auto}[type=search]{-webkit-appearance:textfield;outline-offset:-2px}::-webkit-search-decoration{-webkit-appearance:none}::-webkit-file-upload-button{-webkit-appearance:button;font:inherit}summary{display:list-item}blockquote,dl,dd,h1,h2,h3,h4,h5,h6,hr,figure,p,pre{margin:0}fieldset{margin:0;padding:0}legend{padding:0}ol,ul,menu{list-style:none;margin:0;padding:0}dialog{padding:0}textarea{resize:vertical}input::-moz-placeholder,textarea::-moz-placeholder{opacity:1;color:#9ca3af}input::placeholder,textarea::placeholder{opacity:1;color:#9ca3af}button,[role=button]{cursor:pointer}:disabled{cursor:default}img,svg,video,canvas,audio,iframe,embed,object{display:block;vertical-align:middle}img,video{max-width:100%;height:auto}[hidden]:where(:not([hidden=until-found])){display:none}.container{width:100%}@media(min-width:640px){.container{max-width:640px}}@media(min-width:768px){.container{max-width:768px}}@media(min-width:1024px){.container{max-width:1024px}}@media(min-width:1280px){.container{max-width:1280px}}@media(min-width:1536px){.container{max-width:1536px}}.visible{visibility:visible}.fixed{position:fixed}.left-\\[428px\\]{left:428px}.left-\\[501px\\]{left:501px}.right-\\[20px\\]{right:20px}.top-\\[60px\\]{top:60px}.z-50{z-index:50}.mt-1{margin-top:.25rem}.mt-2{margin-top:.5rem}.mt-4{margin-top:1rem}.mt-8{margin-top:2rem}.flex{display:flex}.h-auto{height:auto}.w-\\[325px\\]{width:325px}.w-full{width:100%}.cursor-pointer{cursor:pointer}.flex-row{flex-direction:row}.flex-col{flex-direction:column}.items-center{align-items:center}.justify-between{justify-content:space-between}.gap-2{gap:.5rem}.rounded-md{border-radius:.375rem}.border{border-width:1px}.border-solid{border-style:solid}.border-gray-200{--tw-border-opacity: 1;border-color:rgb(229 231 235 / var(--tw-border-opacity, 1))}.bg-white{--tw-bg-opacity: 1;background-color:rgb(255 255 255 / var(--tw-bg-opacity, 1))}.p-2{padding:.5rem}.text-sm{font-size:.875rem;line-height:1.25rem}.text-xs{font-size:.75rem;line-height:1rem}.text-xxs{font-size:.625rem}.text-amber-700{--tw-text-opacity: 1;color:rgb(180 83 9 / var(--tw-text-opacity, 1))}.text-black{--tw-text-opacity: 1;color:rgb(0 0 0 / var(--tw-text-opacity, 1))}.text-gray-400{--tw-text-opacity: 1;color:rgb(156 163 175 / var(--tw-text-opacity, 1))}.text-gray-500{--tw-text-opacity: 1;color:rgb(107 114 128 / var(--tw-text-opacity, 1))}.shadow-md{--tw-shadow: 0 4px 6px -1px rgb(0 0 0 / .1), 0 2px 4px -2px rgb(0 0 0 / .1);--tw-shadow-colored: 0 4px 6px -1px var(--tw-shadow-color), 0 2px 4px -2px var(--tw-shadow-color);box-shadow:var(--tw-ring-offset-shadow, 0 0 #0000),var(--tw-ring-shadow, 0 0 #0000),var(--tw-shadow)}button{all:unset}.input{box-sizing:border-box;width:100%;border-width:1px;border-style:solid;--tw-border-opacity: 1;border-color:rgb(212 212 212 / var(--tw-border-opacity, 1));--tw-text-opacity: 1;color:rgb(0 0 0 / var(--tw-text-opacity, 1));transition-property:all;transition-timing-function:cubic-bezier(.4,0,.2,1);transition-duration:.15s}.input-base{height:42px;border-radius:.375rem;padding-left:.5rem;padding-right:.5rem;font-size:.875rem;line-height:1.25rem}.input-sm{height:36px;border-radius:.375rem;padding-left:.5rem;padding-right:.5rem;font-size:.875rem;line-height:1.25rem}.input-danger{--tw-border-opacity: 1;border-color:rgb(239 68 68 / var(--tw-border-opacity, 1))}.input-disabled{cursor:not-allowed;--tw-bg-opacity: 1;background-color:rgb(243 244 246 / var(--tw-bg-opacity, 1));--tw-text-opacity: 1;color:rgb(31 41 55 / var(--tw-text-opacity, 1))}.input-disabled:hover{--tw-bg-opacity: 1;background-color:rgb(243 244 246 / var(--tw-bg-opacity, 1))}.input-error-hint{font-size:.75rem;line-height:1rem;font-weight:500;--tw-text-opacity: 1;color:rgb(239 68 68 / var(--tw-text-opacity, 1))}.button{box-sizing:border-box;display:flex;width:100%;cursor:pointer;align-items:center;justify-content:center;gap:.5rem;text-align:center;font-weight:600;transition-property:all;transition-timing-function:cubic-bezier(.4,0,.2,1);transition-duration:.15s}.button-primary{border-style:none;--tw-bg-opacity: 1;background-color:rgb(23 23 23 / var(--tw-bg-opacity, 1));--tw-text-opacity: 1;color:rgb(255 255 255 / var(--tw-text-opacity, 1))}.button-primary:hover{--tw-bg-opacity: 1;background-color:rgb(38 38 38 / var(--tw-bg-opacity, 1))}.button-secondary{border-width:1px;border-style:solid;--tw-border-opacity: 1;border-color:rgb(212 212 212 / var(--tw-border-opacity, 1));--tw-text-opacity: 1;color:rgb(23 23 23 / var(--tw-text-opacity, 1))}.button-secondary:hover{--tw-bg-opacity: 1;background-color:rgb(245 245 245 / var(--tw-bg-opacity, 1))}.button-upgrade{height:18px;min-width:80px;--tw-bg-opacity: 1;background-color:rgb(244 63 94 / var(--tw-bg-opacity, 1));text-transform:uppercase;--tw-text-opacity: 1;color:rgb(255 255 255 / var(--tw-text-opacity, 1))}.button-upgrade:hover{--tw-bg-opacity: 1;background-color:rgb(225 29 72 / var(--tw-bg-opacity, 1))}.button-loading{cursor:wait;--tw-brightness: brightness(1.1);filter:var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow)}.button-disabled{cursor:not-allowed;--tw-bg-opacity: 1;background-color:rgb(243 244 246 / var(--tw-bg-opacity, 1));--tw-text-opacity: 1;color:rgb(31 41 55 / var(--tw-text-opacity, 1))}.button-disabled:hover{--tw-bg-opacity: 1;background-color:rgb(243 244 246 / var(--tw-bg-opacity, 1))}.button-base,.text-input-base{height:42px;border-radius:.375rem;padding-left:.5rem;padding-right:.5rem;font-size:.875rem;line-height:1.25rem}.button-sm,.text-input-sm{height:32px;border-radius:.375rem;padding-left:.5rem;padding-right:.5rem;font-size:.75rem;line-height:1rem}.button-xs,.text-input-xs{height:18px;border-radius:.25rem;padding-left:.5rem;padding-right:.5rem;font-size:.6rem}@keyframes spin{to{transform:rotate(360deg)}}.spinner{animation:spin 1s linear infinite;fill:#1f2937;--tw-text-opacity: 1;color:rgb(229 231 235 / var(--tw-text-opacity, 1))}.spinner-base{height:20px;width:20px}.spinner-sm{height:16px;width:16px}.logo{font-size:1.125rem;line-height:1.75rem;font-weight:600}.logo-base{font-size:1.125rem;line-height:1.75rem}@media(min-width:1280px){.logo-base{font-size:1.25rem;line-height:1.75rem}}.logo-sm{font-size:.875rem;line-height:1.25rem}.badge{display:flex;height:24px;width:auto;flex-direction:row;align-items:center;justify-content:center;border-radius:.25rem;--tw-bg-opacity: 1;background-color:rgb(0 0 0 / var(--tw-bg-opacity, 1));padding-left:.5rem;padding-right:.5rem;font-size:.625rem;font-weight:600;text-transform:uppercase;--tw-text-opacity: 1;color:rgb(255 255 255 / var(--tw-text-opacity, 1))}.switch-root{position:relative;height:20px;width:36px;cursor:pointer;border-radius:9999px;--tw-bg-opacity: 1;background-color:rgb(163 163 163 / var(--tw-bg-opacity, 1));--tw-shadow: 0 1px 2px 0 rgb(0 0 0 / .05);--tw-shadow-colored: 0 1px 2px 0 var(--tw-shadow-color);box-shadow:var(--tw-ring-offset-shadow, 0 0 #0000),var(--tw-ring-shadow, 0 0 #0000),var(--tw-shadow);--tw-shadow-color: #e5e5e5;--tw-shadow: var(--tw-shadow-colored);-webkit-tap-highlight-color:rgba(0,0,0,0)}.switch-root:focus{--tw-shadow-color: #737373;--tw-shadow: var(--tw-shadow-colored)}.switch-root[data-state=checked]{--tw-bg-opacity: 1;background-color:rgb(0 0 0 / var(--tw-bg-opacity, 1))}.switch-thumb{display:block;height:15px;width:15px;border-radius:9999px;--tw-bg-opacity: 1;background-color:rgb(255 255 255 / var(--tw-bg-opacity, 1));transition:transform .1s;transform:translate(3px);will-change:transform}.switch-thumb[data-state=checked]{transform:translate(18px)}',vs="mapscan_app",Gl=Gp(document.location.href),jd=({platform:t,url:a})=>{const n=new URL(a).href;switch(t){case nt.GOOGLE_MAPS:return n.includes("/maps/search/")&&!n.includes("/maps/place/");case nt.YANDEX_MAPS:return n.includes("/maps")&&[n.includes("/search"),n.includes("mode=search"),n.includes("text="),n.includes("?bookmarks"),n.includes("bookmarks")].some(l=>l===!0);case nt.GIS:return[n.includes("/search"),n.includes("/favorites/private")].some(l=>l===!0);default:return!1}};function iw(t,a){let n=null;return function(...l){const u=()=>{n=null,t.apply(this,l)};n!==null&&clearTimeout(n),n=setTimeout(u,a)}}const Ff=iw(()=>{const t=document.location.href;if(!jd({platform:Gl,url:t})){const d=document.getElementById(vs);d&&d.remove();return}const a=document.getElementById(vs);a&&a.remove();const n=document.createElement("div");n.id=vs;let l=document.body;switch(Gl){case nt.GOOGLE_MAPS:l=document.getElementById("assistive-chips")||document.body;break;case nt.YANDEX_MAPS:case nt.GIS:l=document.body;break}l.append(n);const u=document.createElement("div");u.id="shadow-root";const f=n.attachShadow({mode:"open"});f.appendChild(u);const c=document.createElement("style");c.innerHTML=aw,f.appendChild(c),Hv.createRoot(u).render(Ue.jsx(nw,{platform:Gl||""})),at("APP_RENDER")},100),ps=()=>{jd({platform:Gl,url:document.location.href})&&!document.getElementById(vs)&&Ff()};let Yd=document.location.href;const Xd=new MutationObserver(()=>{let t="";switch(Gl){case nt.GOOGLE_MAPS:t=document.location.href.split("/@")[0];break;case nt.YANDEX_MAPS:t=document.location.href.split("?")[0];break;case nt.GIS:t=document.location.href.split("/firm/")[0];break;default:t=document.location.href;break}if(t!==Yd){Yd=t,Ff();return}ps()});Xd.observe(document,{subtree:!0,childList:!0}),setTimeout(Ff,0),setTimeout(ps,600),setTimeout(ps,1500),setTimeout(ps,3e3),(()=>{const t=document.createElement("script");t.src=chrome.runtime.getURL("injected.js"),t.onload=()=>{t.remove()},(document.head||document.documentElement).appendChild(t),at("CONTENT_SCRIPT_INJECTED")})(),at("CONTENT_SCRIPT_LOADED");let Lf=!0;window.addEventListener("message",t=>{let a;try{a=typeof t.data=="string"?JSON.parse(t.data):t.data}catch{console.warn("Invalid event data in postMessage:",t.data);return}const{action:n,data:l}=a||{};n===Tn.UPDATE_GOOGLE_MAPS_CONFIG&&(Lf&&at("GOOGLE_MAPS_CONFIG",l||{}),Wn({type:Tn.UPDATE_GOOGLE_MAPS_CONFIG,payload:l})),Lf&&(Lf=!1)}),window.addEventListener("unload",()=>{Xd.disconnect()})})();
 
+
+// Shared between the content script and the storage service worker.
+// Both bundles are assembled by tools/build.mjs, so this file is the single
+// definition of how an organisation is keyed, merged and deduplicated.
+// Never edit the copies inside extension/ - they are build output.
+;(() => {
+  const normalize = v => (v || '').toLocaleLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+  const normPhone = v => (v || '').replace(/\D+/g, '');
+
+  // place_id is the only primary key for Yandex. The fallbacks exist for cards
+  // that never exposed one; fuzzy matching is deliberately not used.
+  const stableKey = item => {
+    if (item.place_id) return `id:${item.place_id}`;
+    const p = normPhone(item.phone || item.phones), a = normalize(item.address), t = normalize(item.title);
+    if (p && a) return `phone-address:${p}|${a}`;
+    if (t && a) return `title-address:${t}|${a}`;
+    return `url:${item.maps_url || ''}`;
+  };
+
+  const sourceRecords = item => {
+    try { const x = JSON.parse(item?.source_records || '[]'); return Array.isArray(x) ? x : []; }
+    catch { return []; }
+  };
+
+  const uniqueJoined = arr => [...new Set(arr.map(x => (x || '').trim()).filter(Boolean))].join(' | ');
+
+  const cleanRecord = record => record ? {
+    district: String(record.district || ''),
+    group: String(record.group || ''),
+    category: String(record.category || ''),
+    query: String(record.query || ''),
+  } : null;
+
+  const isEmptyRecord = r => !r || (!r.district && !r.group && !r.category && !r.query);
+
+  // Merges one collected card into whatever is already stored under the same
+  // key. The first version of a card wins on field values; source records
+  // accumulate, so provenance survives an organisation being found by several
+  // queries. Returns the row to store plus whether a new source record was
+  // added, which the caller uses to keep the source-hits total exact.
+  const mergeRecord = (existing, incoming, record) => {
+    const rec = cleanRecord(record);
+    // Seed from the stored row when there is one, otherwise from the incoming
+    // row: a freshly collected card has none, but a row coming back from a RAW
+    // import carries the provenance it was exported with.
+    const records = sourceRecords(existing || incoming);
+    let addedHit = false;
+    if (!isEmptyRecord(rec)) {
+      const seen = JSON.stringify(rec);
+      if (!records.some(x => JSON.stringify(cleanRecord(x)) === seen)) { records.push(rec); addedHit = true; }
+    }
+    const base = existing || incoming;
+    return {
+      row: {
+        ...base,
+        key: stableKey(base),
+        source: 'yandex_maps',
+        source_district: uniqueJoined(records.map(x => x.district)),
+        source_group: uniqueJoined(records.map(x => x.group)),
+        source_category: uniqueJoined(records.map(x => x.category)),
+        source_query: uniqueJoined(records.map(x => x.query)),
+        source_records: JSON.stringify(records),
+        source_queries_count: records.length,
+        category_validation: 'UNKNOWN',
+        district_validation: 'UNKNOWN',
+        detected_district: '',
+        final_status: 'RAW',
+        exclude_reason: '',
+      },
+      inserted: !existing,
+      addedHit,
+    };
+  };
+
+  globalThis.GLSRecord = { normalize, normPhone, stableKey, sourceRecords, uniqueJoined, cleanRecord, mergeRecord };
+})();
+
 ;(() => {
   if (!/^(?:www\.)?yandex\./i.test(location.hostname) || !location.pathname.includes('/maps')) return;
 
@@ -153,7 +230,6 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     scrolledEver: false,
     maxScrollTop: 0,
     warning: null,
-    data: [],
     seenUrls: [],
     seenPlaceIds: [],
     acceptedKeys: [],
@@ -171,15 +247,14 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     startTime: null,
     lastProgressTime: null,
     error: null,
-    cardCache: {},
-    data: [],
+    finalCount: 0,
+    storageVersion: 2,
     filterStatus: 'IDLE',
     filterPhase: 'IDLE',
     filterError: null,
     filterStartedAt: null,
     filterCompletedAt: null,
     filterStats: {processed:0,total:0,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,ambiguousDistrict:0,matchedSourceRecords:0},
-    finalData: [],
     geoInfo: null,
     geoError: null,
     warnings: [],
@@ -200,14 +275,31 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
   const log = (msg, data) => console.log(`[AUTO] ${msg}`, data || '');
   const blog = (msg, data) => console.log(`[BATCH] ${msg}`, data || '');
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
-  const normalize = v => (v || '').toLocaleLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
-  const normPhone = v => (v || '').replace(/\D+/g, '');
-  const stableKey = item => {
-    if (item.place_id) return `id:${item.place_id}`;
-    const p = normPhone(item.phone || item.phones), a = normalize(item.address), t = normalize(item.title);
-    if (p && a) return `phone-address:${p}|${a}`;
-    if (t && a) return `title-address:${t}|${a}`;
-    return `url:${item.maps_url || ''}`;
+  // Keying, merging and dedupe live in src/shared-record.js so that the content
+  // script and the storage service worker can never disagree about them.
+  const {normalize, stableKey, sourceRecords, uniqueJoined} = globalThis.GLSRecord;
+
+  // Client for the IndexedDB dataset owned by the service worker. The dataset
+  // no longer rides inside the chrome.storage snapshot, so a write costs one
+  // record instead of the whole registry.
+  const STORE_PAGE = 500;
+  const store = (op, payload) => new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({type:'GLS_STORE', op, payload: payload || {}}, response => {
+      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+      if (!response) return reject(new Error('Хранилище не ответило. Перезагрузите расширение.'));
+      if (!response.ok) return reject(new Error(response.error || 'Ошибка хранилища.'));
+      resolve(response.data);
+    });
+  });
+  // Streams a store page by page so that neither the filter nor the export
+  // ever holds the whole registry in memory.
+  const eachStored = async (op, onPage) => {
+    for (let offset = 0; ; offset += STORE_PAGE) {
+      const rows = await store(op, {offset, limit: STORE_PAGE});
+      if (!rows.length) return;
+      await onPage(rows, offset);
+      if (rows.length < STORE_PAGE) return;
+    }
   };
 
 
@@ -527,12 +619,15 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
 
   const autoSnapshot = () => ({...state,seenUrls:[...seenUrls],seenPlaceIds:[...seenPlaceIds],acceptedKeys:[...acceptedKeys]});
   const writeAutoStorage = async () => {
+    // Materialising the dedupe sets is O(n); doing it here rather than on every
+    // patchAuto means it happens once per debounce window, not four times per
+    // card.
     const snapshot=autoSnapshot();
     autoPersistInFlight=autoPersistInFlight.then(()=>chrome.storage.local.set({[AUTO_KEY]:snapshot}).catch(e=>console.warn('[AUTO] storage write failed',e)));
     await autoPersistInFlight;
   };
   const persistAuto = async (immediate=false) => {
-    state.seenUrls=[...seenUrls];state.seenPlaceIds=[...seenPlaceIds];state.acceptedKeys=[...acceptedKeys];render();
+    render();
     if(immediate){if(autoPersistTimer){clearTimeout(autoPersistTimer);autoPersistTimer=null;}await writeAutoStorage();return;}
     if(autoPersistTimer)return;
     autoPersistTimer=setTimeout(()=>{autoPersistTimer=null;void writeAutoStorage();},350);
@@ -562,7 +657,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
       stats.newUrls++; seenUrls.add(url); if(pidFromUrl)seenPlaceIds.add(pidFromUrl);
       await patchAuto({totalEncountered:state.totalEncountered+1});
 
-      let item=pidFromUrl && batch.cardCache ? batch.cardCache[pidFromUrl] : null, fromCache=!!item;
+      let item=pidFromUrl ? await store('getRawByPlaceId',{place_id:pidFromUrl}) : null, fromCache=!!item;
       if(item){stats.cacheReused++;await patchAuto({reusedFromBatchCache:state.reusedFromBatchCache+1});}
       else{
         try{item=await parser(url,{extractWebsites:false});}catch{item=null;}
@@ -573,14 +668,19 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
       }
 
       item=normalizeCoords(item);
-      if(batch.status!==BATCH.IDLE && item.place_id){batch.cardCache ||= {};batch.cardCache[item.place_id]=item;}
       const enriched={...item,source:'yandex_maps',source_query:state.currentSearchQuery,category_validation:'UNKNOWN',district_validation:'UNKNOWN',detected_district:'',final_status:'RAW',exclude_reason:''};
       // RAW-FIRST: collection never depends on category/GEO filtering.
       // Every unique card is preserved; filtering is a separate local post-process.
       const key=stableKey(enriched);
       if(acceptedKeys.has(key)){stats.duplicateItems++;await patchAuto({duplicatesCount:state.duplicatesCount+1});continue;}
+      // Durable before it is counted: the card is in IndexedDB the moment it is
+      // read, so a crash costs at most the card in flight.
+      const totals=await store('putRaw',{records:[enriched],record:currentBatchQuery()||{district:'',group:'',category:'',query:state.currentSearchQuery}});
       stats.acceptedUnique++;acceptedKeys.add(key);
-      const data=[...state.data,enriched];await patchAuto({data,uniqueCount:data.length,lastProgressTime:Date.now()});
+      await patchAuto({uniqueCount:acceptedKeys.size,lastProgressTime:Date.now()});
+      if(batch.uniqueCount!==totals.rawUnique||batch.sourceHits!==totals.rawSourceHits){
+        batch={...batch,uniqueCount:totals.rawUnique,sourceHits:totals.rawSourceHits};
+      }
       if(!fromCache && CFG.CARD_DELAY_MS>0)await sleep(CFG.CARD_DELAY_MS+Math.floor(Math.random()*180));
     }
     return stats;
@@ -685,9 +785,8 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
       log('error', e?.message || e);
       if (batch.status === BATCH.RUNNING) {
         const q = [...batch.queue], current=q[batch.currentIndex];
-        const checkpoint=current?mergeAutoIntoBatch(batch.data,state.data,current):{data:batch.data,sourceHits:batch.sourceHits};
         if (current) q[batch.currentIndex] = {...current,status:'ERROR',error:state.error,uniqueFound:state.uniqueCount};
-        await patchBatch({...checkpoint,uniqueCount:checkpoint.data.length,status:BATCH.ERROR,error:state.error,queue:q,failedQueries:batch.failedQueries+1});
+        await patchBatch({...await storeTotals(),status:BATCH.ERROR,error:state.error,queue:q,failedQueries:batch.failedQueries+1});
       }
     }).finally(() => { loopPromise = null; });
   };
@@ -703,15 +802,21 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
   const stopAuto = async () => { if (![AUTO.IDLE,AUTO.COMPLETED,AUTO.STOPPED].includes(state.status)) { runToken++; await patchAuto({status:AUTO.STOPPED},true); log('stopped by user'); } };
   const resetAuto = async () => { runToken++; if(autoPersistTimer){clearTimeout(autoPersistTimer);autoPersistTimer=null;} state=blankAuto(); seenUrls.clear(); seenPlaceIds.clear(); acceptedKeys.clear(); try {await chrome.storage.local.remove(AUTO_KEY);} catch{} render(); log('reset'); };
 
+  const storeTotals = async () => {
+    const t=await store('stats');
+    return {uniqueCount:t.rawUnique,sourceHits:t.rawSourceHits,finalCount:t.finalCount};
+  };
+
   const csvCell = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
-  const saveCsv = (rows, fields, name) => {
-    const csv = '\uFEFF' + [fields.join(','), ...rows.map(row => fields.map(f => csvCell(row[f])).join(','))].join('\r\n');
-    const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'}), url=URL.createObjectURL(blob), a=document.createElement('a');
+  const csvRows = (rows,fields) => rows.map(row => fields.map(f => csvCell(row[f])).join(',')).join('\r\n');
+  // Streams the file in chunks: a Blob takes an array of strings, so a large
+  // registry never has to be concatenated into one string in memory.
+  const saveCsvStream = async (name, fields, produce) => {
+    const parts=['\uFEFF'+fields.join(',')];
+    await produce(rows => { if(rows.length) parts.push('\r\n'+csvRows(rows,fields)); });
+    const blob = new Blob(parts,{type:'text/csv;charset=utf-8;'}), url=URL.createObjectURL(blob), a=document.createElement('a');
     a.href=url; a.download=`${name}-${new Date().toISOString().replace(/[-:TZ.]/g,'').slice(0,14)}.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   };
-  const exportAuto = () => saveCsv(state.data,
-    ['place_id','source','source_query','category_validation','district_validation','detected_district','title','address','phone','website','maps_url','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'],
-    'geoleadscraper-yandex_maps-auto');
   const RAW_FIELDS=['source_district','source_group','source_category','title','address','phone','website','maps_url','source','source_query','source_queries_count','source_records','place_id','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'];
   const RAW_META_FIELDS=['export_batch_status','export_queries_total','export_queries_completed','export_queries_low_yield','export_warnings'];
   // A RAW file must be able to explain itself: a truncated or low-yield run
@@ -728,14 +833,15 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
       export_warnings:warnings.join(' | '),
     }};
   };
-  const exportBatchRaw = () => {
+  const exportBatchRaw = async () => {
     const {full,meta}=rawExportMeta();
-    saveCsv(batch.data.map(row=>({...row,...meta})),[...RAW_FIELDS,...RAW_META_FIELDS],
-      full?'geoleadscraper-yandex_maps-RAW_ALL':'geoleadscraper-yandex_maps-RAW_PARTIAL');
+    await saveCsvStream(full?'geoleadscraper-yandex_maps-RAW_ALL':'geoleadscraper-yandex_maps-RAW_PARTIAL',
+      [...RAW_FIELDS,...RAW_META_FIELDS],
+      write => eachStored('listRaw', rows => write(rows.map(row=>({...row,...meta})))));
   };
-  const exportBatchFinal = () => saveCsv(batch.finalData||[],
+  const exportBatchFinal = async () => saveCsvStream('geoleadscraper-yandex_maps-FINAL_FILTERED',
     ['matched_source_district','matched_source_group','matched_source_category','title','address','phone','website','maps_url','source','matched_source_query','matched_source_queries_count','matched_source_records','category_validation','district_validation','district_quality','district_candidates','detected_district','final_status','exclude_reason','place_id','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'],
-    'geoleadscraper-yandex_maps-FINAL_FILTERED');
+    write => eachStored('listFinal', rows => write(rows)));
 
   // -------- BATCH CSV --------
   const detectDelimiter = text => {
@@ -787,21 +893,6 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     if(!out.length) throw new Error('В CSV нет непустых поисковых запросов.'); return out;
   };
 
-  const sourceRecords = item => { try { const x=JSON.parse(item.source_records||'[]'); return Array.isArray(x)?x:[]; } catch { return []; } };
-  const uniqueJoined = arr => [...new Set(arr.map(x=>(x||'').trim()).filter(Boolean))].join(' | ');
-  const mergeBatchItem = (existing,item,q) => {
-    const record={district:q.district,group:q.group,category:q.category,query:q.query};
-    const records=existing?sourceRecords(existing):[];
-    const rk=JSON.stringify(record); if(!records.some(x=>JSON.stringify(x)===rk)) records.push(record);
-    return {...(existing||item),source:'yandex_maps',source_district:uniqueJoined(records.map(x=>x.district)),source_group:uniqueJoined(records.map(x=>x.group)),source_category:uniqueJoined(records.map(x=>x.category)),source_query:uniqueJoined(records.map(x=>x.query)),source_records:JSON.stringify(records),source_queries_count:records.length,category_validation:'UNKNOWN',district_validation:'UNKNOWN',detected_district:'',final_status:'RAW',exclude_reason:''};
-  };
-  const mergeAutoIntoBatch = (batchData,autoData,q) => {
-    const byKey=new Map(); batchData.forEach(x=>byKey.set(stableKey(x),x));
-    autoData.forEach(item=>{const key=stableKey(item);byKey.set(key,mergeBatchItem(byKey.get(key),item,q));});
-    const data=[...byKey.values()];
-    const sourceHits=data.reduce((sum,item)=>sum+(item.source_queries_count||sourceRecords(item).length||1),0);
-    return {data,sourceHits};
-  };
   const buildSearchUrl = query => {
     const current=new URL(location.href), m=current.pathname.match(/^\/maps\/([^/]+)\/([^/]+)/i);
     const region=m?.[1]||'213', city=(m?.[2]&&m[2]!=='search')?m[2]:'moscow';
@@ -833,8 +924,15 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     const sourceHits=data.reduce((sum,x)=>sum+(x.source_queries_count||sourceRecords(x).length||1),0);return {data,queue,sourceHits};
   };
   const loadRawText = async (text,fileName) => {
-    const x=parseRawCsv(text); await resetAuto(); const cardCache={};x.data.forEach(i=>{if(i.place_id)cardCache[i.place_id]=i;});
-    batch={...blankBatch(),status:BATCH.COMPLETED,fileName:fileName||'raw.csv',queue:x.queue,currentIndex:x.queue.length,completedQueries:x.queue.length,uniqueCount:x.data.length,sourceHits:x.sourceHits,startTime:Date.now(),lastProgressTime:Date.now(),cardCache,data:x.data};await persistBatch();blog('RAW imported',{fileName,rawUnique:x.data.length});
+    const x=parseRawCsv(text);
+    await resetAuto();
+    // An import replaces the registry, as it always has: it exists to refilter
+    // a known RAW, not to blend two of them.
+    await store('clearRaw');
+    for(let i=0;i<x.data.length;i+=STORE_PAGE)await store('putRaw',{records:x.data.slice(i,i+STORE_PAGE),record:null});
+    const totals=await store('recount');
+    batch={...blankBatch(),status:BATCH.COMPLETED,fileName:fileName||'raw.csv',queue:x.queue,currentIndex:x.queue.length,completedQueries:x.queue.length,uniqueCount:totals.rawUnique,sourceHits:totals.rawSourceHits,startTime:Date.now(),lastProgressTime:Date.now()};
+    await persistBatch();blog('RAW imported',{fileName,rawUnique:totals.rawUnique,sourceHits:totals.rawSourceHits});
   };
 
   const loadBatchText = async (text,fileName) => {
@@ -874,14 +972,14 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     if(normalize(state.currentSearchQuery)!==normalize(current.query)||state.status!==AUTO.COMPLETED)return;
     batchAdvancing=true;
     try{
-      const merged=mergeAutoIntoBatch(batch.data,state.data,current), data=merged.data, sourceHits=merged.sourceHits, q=[...batch.queue];
+      const totals=await storeTotals(), q=[...batch.queue];
       const queryWarning=state.warning||null;
       q[batch.currentIndex]={...current,status:queryWarning?'COMPLETED_LOW':'COMPLETED',uniqueFound:state.uniqueCount,error:null,warning:queryWarning};
       const warnings=queryWarning?[...(batch.warnings||[]),{query:current.query,unique:state.uniqueCount,message:queryWarning}]:(batch.warnings||[]);
       const next=batch.currentIndex+1, completed=batch.completedQueries+1;if(next<q.length)q[next]={...q[next],status:'RUNNING',error:null};
-      batch={...batch,queue:q,warnings,data,uniqueCount:data.length,sourceHits,completedQueries:completed,currentIndex:next,lastProgressTime:Date.now(),error:null,status:next>=q.length?BATCH.COMPLETED:BATCH.RUNNING,filterStatus:'IDLE',filterPhase:'IDLE',filterError:null,filterStartedAt:null,filterCompletedAt:null,filterStats:blankBatch().filterStats,finalData:[]};
-      await persistBatch();blog('query completed',{index:next,query:current.query,queryRawUnique:state.uniqueCount,totalRawUnique:data.length});
-      if(next>=q.length){blog('completed',{queries:completed,unique:data.length});return;}
+      batch={...batch,queue:q,warnings,...totals,completedQueries:completed,currentIndex:next,lastProgressTime:Date.now(),error:null,status:next>=q.length?BATCH.COMPLETED:BATCH.RUNNING,filterStatus:'IDLE',filterPhase:'IDLE',filterError:null,filterStartedAt:null,filterCompletedAt:null,filterStats:blankBatch().filterStats};
+      await persistBatch();blog('query completed',{index:next,query:current.query,queryRawUnique:state.uniqueCount,totalRawUnique:totals.uniqueCount});
+      if(next>=q.length){blog('completed',{queries:completed,unique:totals.uniqueCount});return;}
       await resetAuto();const n=q[next];blog('next query',{index:next+1,query:n.query});location.assign(buildSearchUrl(n.query));
     }finally{batchAdvancing=false;}
   };
@@ -896,68 +994,76 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
   const resumeBatch = async () => {if(![BATCH.PAUSED,BATCH.USER_ACTION_REQUIRED].includes(batch.status))return;await patchBatch({status:BATCH.RUNNING,error:null});blog('resumed',{currentIndex:batch.currentIndex});await runBatchCurrent();};
   const stopBatch = async () => {
     if([BATCH.IDLE,BATCH.COMPLETED,BATCH.STOPPED].includes(batch.status))return;
-    const current=batch.queue[batch.currentIndex], autoSnapshot={...state,data:[...state.data]};
     await stopAuto();
-    if(current&&normalize(autoSnapshot.currentSearchQuery)===normalize(current.query)&&autoSnapshot.data.length){
-      const checkpoint=mergeAutoIntoBatch(batch.data,autoSnapshot.data,current);
-      await patchBatch({...checkpoint,uniqueCount:checkpoint.data.length,status:BATCH.STOPPED});
-    }else await patchBatch({status:BATCH.STOPPED});
+    // Nothing to check-point: every card was written to the store as it was
+    // read, so stopping only has to refresh the totals shown in the panel.
+    await patchBatch({...await storeTotals(),status:BATCH.STOPPED});
     blog('stopped',{completed:batch.completedQueries,unique:batch.uniqueCount});
   };
-  const resetBatch = async () => {await resetAuto();batch=blankBatch();try{await chrome.storage.local.remove(BATCH_KEY);}catch{}render();blog('reset');};
+  // The only action that destroys collected data, and it says so on the button.
+  const resetBatch = async () => {
+    await resetAuto();
+    try{await store('clearRaw');}catch(e){blog('store clear failed',e?.message||e);}
+    batch=blankBatch();
+    try{await chrome.storage.local.remove(BATCH_KEY);}catch{}
+    render();blog('reset');
+  };
 
   const filterBatch = async () => {
-    if(!batch.data?.length)throw new Error('RAW-реестр пуст. Сначала выполните BATCH.');
+    const totals=await storeTotals();
+    if(!totals.uniqueCount)throw new Error('RAW-реестр пуст. Сначала выполните BATCH.');
     if(batch.filterStatus==='RUNNING')return;
-    const stats={processed:0,total:batch.data.length,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,ambiguousDistrict:0,matchedSourceRecords:0};
-    const finalData=[];
-    await patchBatch({filterStatus:'RUNNING',filterPhase:'LOADING_GEO',filterError:null,filterStartedAt:Date.now(),filterCompletedAt:null,filterStats:stats,finalData:[]});
-    blog('filter started',{rawUnique:batch.data.length});
+    const stats={processed:0,total:totals.uniqueCount,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,ambiguousDistrict:0,matchedSourceRecords:0};
+    await patchBatch({filterStatus:'RUNNING',filterPhase:'LOADING_GEO',filterError:null,filterStartedAt:Date.now(),filterCompletedAt:null,filterStats:stats,finalCount:0});
+    blog('filter started',{rawUnique:stats.total});
     try{
-      const needsGeo=batch.data.some(item=>sourceRecords(item).some(record=>Object.keys(DISTRICTS).some(d=>normalize(d)===normalize(record.district))));
-      let geoInfo=null;
-      if(needsGeo){const geo=await ensureGeo();geoInfo={source:geo.source,quality:geo.quality||null};}
-      await patchBatch({filterPhase:'FILTERING',geoInfo});
-      for(let i=0;i<batch.data.length;i++){
-        const item=batch.data[i],records=sourceRecords(item),decisions=[];
-        for(const record of records){
-          const decision=await evaluateItem(item,record);
-          decisions.push({record,decision});
+      const geo=await ensureGeo();
+      await store('clearFinal');
+      await patchBatch({filterPhase:'FILTERING',geoInfo:{source:geo.source,quality:geo.quality||null}});
+      // Streams RAW page by page and writes FINAL page by page. Neither the
+      // input nor the output registry is ever held whole in memory.
+      await eachStored('listRaw', async rows => {
+        const accepted=[];
+        for(const item of rows){
+          const records=sourceRecords(item),decisions=[];
+          for(const record of records)decisions.push({record,decision:await evaluateItem(item,record)});
+          const ok=decisions.filter(x=>x.decision.accept);
+          if(ok.length){
+            const uniqueAccepted=[...new Map(ok.map(x=>[JSON.stringify(x.record),x])).values()];
+            const matched=uniqueAccepted.map(x=>x.record);
+            const detected=uniqueJoined(uniqueAccepted.map(x=>x.decision.detectedDistrict||'').filter(Boolean));
+            // Report the validations that were actually computed. A record with
+            // no category or no district in the query is UNKNOWN, not MATCH:
+            // search metadata and verified metadata must stay separate.
+            const categoryValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.categoryValidation))||'UNKNOWN';
+            const districtValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtValidation))||'UNKNOWN';
+            const districtQuality=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtQuality))||'NOT_CHECKED';
+            const candidates=uniqueJoined(uniqueAccepted.flatMap(x=>x.decision.districtCandidates||[]));
+            const ambiguous=uniqueAccepted.some(x=>x.decision.districtQuality==='AMBIGUOUS');
+            if(ambiguous)stats.ambiguousDistrict++;
+            accepted.push({...item,category_validation:categoryValidation,district_validation:districtValidation,district_quality:districtQuality,district_candidates:ambiguous?candidates:'',detected_district:detected,matched_source_district:uniqueJoined(matched.map(x=>x.district)),matched_source_group:uniqueJoined(matched.map(x=>x.group)),matched_source_category:uniqueJoined(matched.map(x=>x.category)),matched_source_query:uniqueJoined(matched.map(x=>x.query)),matched_source_records:JSON.stringify(matched),matched_source_queries_count:matched.length,final_status:'ACCEPTED',exclude_reason:''});
+            stats.accepted++;stats.matchedSourceRecords+=matched.length;
+          }else{
+            const hasCategoryMatch=decisions.some(x=>!x.record.category||x.decision.categoryValidation==='MATCH');
+            const hasCategoryProblem=decisions.some(x=>!!x.record.category&&x.decision.categoryValidation!=='MATCH');
+            const hasNoCoords=decisions.some(x=>x.decision.districtValidation==='NO_COORDINATES');
+            const hasDistrictProblem=decisions.some(x=>!!x.record.district&&x.decision.districtValidation==='MISMATCH');
+            if(hasCategoryMatch&&hasNoCoords&&!hasDistrictProblem)stats.rejectedNoCoords++;
+            else if(hasCategoryMatch&&hasDistrictProblem)stats.rejectedDistrict++;
+            else if(hasCategoryProblem)stats.rejectedCategory++;
+            else stats.rejectedUnknown++;
+          }
+          stats.processed++;
         }
-        const accepted=decisions.filter(x=>x.decision.accept);
-        if(accepted.length){
-          const uniqueAccepted=[...new Map(accepted.map(x=>[JSON.stringify(x.record),x])).values()];
-          const matched=uniqueAccepted.map(x=>x.record);
-          const detected=uniqueJoined(uniqueAccepted.map(x=>x.decision.detectedDistrict||'').filter(Boolean));
-          // Report the validations that were actually computed. A record with
-          // no category or no district in the query is UNKNOWN, not MATCH:
-          // search metadata and verified metadata must stay separate.
-          const categoryValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.categoryValidation))||'UNKNOWN';
-          const districtValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtValidation))||'UNKNOWN';
-          const districtQuality=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtQuality))||'NOT_CHECKED';
-          const candidates=uniqueJoined(uniqueAccepted.flatMap(x=>x.decision.districtCandidates||[]));
-          const ambiguous=uniqueAccepted.some(x=>x.decision.districtQuality==='AMBIGUOUS');
-          if(ambiguous)stats.ambiguousDistrict++;
-          finalData.push({...item,category_validation:categoryValidation,district_validation:districtValidation,district_quality:districtQuality,district_candidates:ambiguous?candidates:'',detected_district:detected,matched_source_district:uniqueJoined(matched.map(x=>x.district)),matched_source_group:uniqueJoined(matched.map(x=>x.group)),matched_source_category:uniqueJoined(matched.map(x=>x.category)),matched_source_query:uniqueJoined(matched.map(x=>x.query)),matched_source_records:JSON.stringify(matched),matched_source_queries_count:matched.length,final_status:'ACCEPTED',exclude_reason:''});
-          stats.accepted++;stats.matchedSourceRecords+=matched.length;
-        }else{
-          const hasCategoryMatch=decisions.some(x=>!x.record.category||x.decision.categoryValidation==='MATCH');
-          const hasCategoryProblem=decisions.some(x=>!!x.record.category&&x.decision.categoryValidation!=='MATCH');
-          const hasNoCoords=decisions.some(x=>x.decision.districtValidation==='NO_COORDINATES');
-          const hasDistrictProblem=decisions.some(x=>!!x.record.district&&x.decision.districtValidation==='MISMATCH');
-          if(hasCategoryMatch&&hasNoCoords&&!hasDistrictProblem)stats.rejectedNoCoords++;
-          else if(hasCategoryMatch&&hasDistrictProblem)stats.rejectedDistrict++;
-          else if(hasCategoryProblem)stats.rejectedCategory++;
-          else stats.rejectedUnknown++;
-        }
-        stats.processed=i+1;
-        if(stats.processed%20===0||stats.processed===stats.total){await patchBatch({filterStats:{...stats},finalData:[...finalData]});await sleep(0);}
-      }
-      await patchBatch({filterStatus:'COMPLETED',filterPhase:'DONE',filterError:null,filterCompletedAt:Date.now(),filterStats:{...stats},finalData});
+        const written=accepted.length?await store('putFinal',{records:accepted}):null;
+        await patchBatch({filterStats:{...stats},finalCount:written?written.finalCount:batch.finalCount});
+        await sleep(0);
+      });
+      await patchBatch({filterStatus:'COMPLETED',filterPhase:'DONE',filterError:null,filterCompletedAt:Date.now(),filterStats:{...stats}});
       blog('filter completed',{rawUnique:stats.total,accepted:stats.accepted,ambiguousDistrict:stats.ambiguousDistrict,noCoords:stats.rejectedNoCoords});
     }catch(e){
       const message=e?.message||String(e);
-      await patchBatch({filterStatus:'ERROR',filterPhase:'ERROR',filterError:message,filterCompletedAt:Date.now(),filterStats:{...stats},finalData});
+      await patchBatch({filterStatus:'ERROR',filterPhase:'ERROR',filterError:message,filterCompletedAt:Date.now(),filterStats:{...stats}});
       blog('filter error',{message,processed:stats.processed,rawUnique:stats.total});
     }
   };
@@ -1001,7 +1107,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     if(state.status===AUTO.IDLE)buttons=btn('AUTO COLLECT · ОДИН ЗАПРОС','auto-start');
     else if(state.status===AUTO.RUNNING)buttons=btn('PAUSE','auto-pause')+btn('STOP','auto-stop');
     else if([AUTO.PAUSED,AUTO.USER_ACTION_REQUIRED].includes(state.status))buttons=btn('RESUME','auto-resume')+btn('STOP','auto-stop');
-    else buttons=(state.data.length?btn(`EXPORT (${state.uniqueCount})`,'auto-export'):'')+btn('RESET','auto-reset');
+    else buttons=(batch.uniqueCount?btn(`EXPORT RAW (${batch.uniqueCount})`,'batch-export-raw'):'')+btn('RESET','auto-reset');
     return `<div><div style="font-size:13px;font-weight:700">GeoLeadScraper · Yandex</div><div style="margin-top:6px">Статус: <b>${autoLabel(state.status)}</b></div>${stats}${err}${buttons}</div>`;
   };
 
@@ -1056,9 +1162,9 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     }
     let stats='';
     if(!idle){stats=`<div style="margin-top:6px;line-height:1.5"><div>Запросов: ${batch.queue.length}</div>`;
-      if(running||paused||action||finished||error)stats+=`<div>RAW уникальных организаций: <b>${batch.uniqueCount}</b></div><div>Всего попаданий по запросам: ${batch.sourceHits}</div><div>Карточек во внутреннем кэше: ${Object.keys(batch.cardCache||{}).length}</div>`;stats+='</div>';}
+      if(running||paused||action||finished||error)stats+=`<div>RAW уникальных организаций: <b>${batch.uniqueCount}</b></div><div>Всего попаданий по запросам: ${batch.sourceHits}</div><div>Хранилище: IndexedDB (расширение)</div>`;stats+='</div>';}
     let filter='';
-    if((finished||error)&&batch.data.length){
+    if((finished||error)&&batch.uniqueCount){
       const statusText=filterRunning?`${filterPct}%`:filterCompleted?'ГОТОВО':filterError?'ОШИБКА':'НЕ ЗАПУЩЕНА';
       filter=`<div style="margin-top:8px;padding:9px;border:1px solid #e5e7eb;border-radius:7px;background:#fafafa;font-size:11px">`+
         `<div style="display:flex;justify-content:space-between;gap:8px"><b>ЛОКАЛЬНАЯ ФИЛЬТРАЦИЯ</b><b>${statusText}</b></div>`;
@@ -1083,18 +1189,18 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     if(paused||action)buttons=btn('RESUME BATCH','batch-resume')+btn('STOP BATCH','batch-stop');
     if(finished||error){
       buttons+=btn('IMPORT RAW CSV','batch-raw-file');
-      if(batch.data.length){buttons+=btn(`EXPORT RAW (${batch.uniqueCount})`,'batch-export-raw');if(!filterRunning)buttons+=btn(filterCompleted||filterError?'ПЕРЕФИЛЬТРОВАТЬ RAW → FINAL':'FILTER RAW → FINAL','batch-filter');if(filterCompleted&&batch.finalData?.length)buttons+=btn(`EXPORT FINAL (${batch.finalData.length})`,'batch-export-final');}
-      if(!filterRunning)buttons+=btn('RESET BATCH','batch-reset');
+      if(batch.uniqueCount){buttons+=btn(`EXPORT RAW (${batch.uniqueCount})`,'batch-export-raw');if(!filterRunning)buttons+=btn(filterCompleted||filterError?'ПЕРЕФИЛЬТРОВАТЬ RAW → FINAL':'FILTER RAW → FINAL','batch-filter');if(filterCompleted&&batch.finalCount)buttons+=btn(`EXPORT FINAL (${batch.finalCount})`,'batch-export-final');}
+      if(!filterRunning)buttons+=btn(`RESET BATCH — УДАЛИТЬ RAW (${batch.uniqueCount})`,'batch-reset','color:#a16207');
     }
-    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.4.2 LOCAL-GEO</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${geoBlock}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-geo-file" type="file" accept=".geojson,.json,application/geo+json,application/json" style="display:none"></div>`;
+    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.5.0 IDB-STORE</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${geoBlock}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-geo-file" type="file" accept=".geojson,.json,application/geo+json,application/json" style="display:none"></div>`;
   };
 
   const render = () => {
     const panel=getPanel();if(!panel)return;
     panel.innerHTML=singleHtml()+batchHtml();
     const actions={
-      'auto-start':startAuto,'auto-pause':pauseAuto,'auto-resume':resumeAuto,'auto-stop':stopAuto,'auto-reset':resetAuto,'auto-export':exportAuto,
-      'batch-start':()=>startBatch().catch(batchFatal),'batch-pause':pauseBatch,'batch-resume':resumeBatch,'batch-stop':stopBatch,'batch-reset':resetBatch,'batch-export-raw':exportBatchRaw,'batch-filter':()=>filterBatch().catch(batchFatal),'batch-export-final':exportBatchFinal,
+      'auto-start':startAuto,'auto-pause':pauseAuto,'auto-resume':resumeAuto,'auto-stop':stopAuto,'auto-reset':resetAuto,
+      'batch-start':()=>startBatch().catch(batchFatal),'batch-pause':pauseBatch,'batch-resume':resumeBatch,'batch-stop':stopBatch,'batch-reset':()=>resetBatch().catch(batchFatal),'batch-export-raw':()=>exportBatchRaw().catch(batchFatal),'batch-filter':()=>filterBatch().catch(batchFatal),'batch-export-final':()=>exportBatchFinal().catch(batchFatal),
       'batch-file':()=>panel.querySelector('#gls-batch-file')?.click(),
       'batch-raw-file':()=>panel.querySelector('#gls-raw-file')?.click(),
       'geo-file':()=>panel.querySelector('#gls-geo-file')?.click(),
@@ -1109,12 +1215,51 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     if(geoInput)geoInput.addEventListener('change',async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{await importGeoJsonText(await file.text(),file.name);await patchBatch({geoError:null});}catch(err){await patchBatch({geoError:err?.message||String(err)});}});
   };
 
+  // One-time move of a v1.4.x dataset out of the chrome.storage snapshot and
+  // into IndexedDB. Ordered so that rows carrying provenance win: batch data
+  // first, then the per-query scratch, then the card cache. Merging is keyed
+  // and idempotent, so an interrupted migration simply resumes next time.
+  const migrateLegacyDataset = async stored => {
+    const legacyBatch=stored?.[BATCH_KEY], legacyAuto=stored?.[AUTO_KEY];
+    if(legacyBatch?.storageVersion===2)return null;
+    const batchRows=Array.isArray(legacyBatch?.data)?legacyBatch.data:[];
+    const autoRows=Array.isArray(legacyAuto?.data)?legacyAuto.data:[];
+    const finalRows=Array.isArray(legacyBatch?.finalData)?legacyBatch.finalData:[];
+    const cacheRows=legacyBatch?.cardCache&&typeof legacyBatch.cardCache==='object'?Object.values(legacyBatch.cardCache):[];
+    if(!legacyBatch&&!legacyAuto)return null;
+    if(!batchRows.length&&!autoRows.length&&!cacheRows.length&&!finalRows.length){
+      if(legacyBatch)await chrome.storage.local.set({[BATCH_KEY]:{...legacyBatch,storageVersion:2}});
+      return null;
+    }
+    blog('migrating dataset to IndexedDB',{batchRows:batchRows.length,autoRows:autoRows.length,cacheRows:cacheRows.length,finalRows:finalRows.length});
+    for(let i=0;i<batchRows.length;i+=STORE_PAGE)await store('putRaw',{records:batchRows.slice(i,i+STORE_PAGE),record:null});
+    for(let i=0;i<autoRows.length;i+=STORE_PAGE)await store('putRaw',{records:autoRows.slice(i,i+STORE_PAGE),record:{district:'',group:'',category:'',query:String(legacyAuto?.currentSearchQuery||'')}});
+    for(let i=0;i<cacheRows.length;i+=STORE_PAGE)await store('putRaw',{records:cacheRows.slice(i,i+STORE_PAGE),record:null});
+    for(let i=0;i<finalRows.length;i+=STORE_PAGE)await store('putFinal',{records:finalRows.slice(i,i+STORE_PAGE)});
+    const totals=await store('recount');
+    const nextBatch={...(legacyBatch||blankBatch()),storageVersion:2,uniqueCount:totals.rawUnique,sourceHits:totals.rawSourceHits,finalCount:totals.finalCount};
+    delete nextBatch.data;delete nextBatch.cardCache;delete nextBatch.finalData;
+    const nextAuto=legacyAuto?{...legacyAuto}:null;
+    if(nextAuto)delete nextAuto.data;
+    const write={[BATCH_KEY]:nextBatch};if(nextAuto)write[AUTO_KEY]=nextAuto;
+    await chrome.storage.local.set(write);
+    stored[BATCH_KEY]=nextBatch;if(nextAuto)stored[AUTO_KEY]=nextAuto;
+    blog('dataset migrated',totals);
+    return totals;
+  };
+
   const restore = async () => {
+    let stored=null;
     try{
-      const stored=await chrome.storage.local.get([AUTO_KEY,BATCH_KEY]);
-      if(stored?.[AUTO_KEY]?.status){state={...blankAuto(),...stored[AUTO_KEY],data:Array.isArray(stored[AUTO_KEY].data)?stored[AUTO_KEY].data:[]};seenUrls=new Set(Array.isArray(state.seenUrls)?state.seenUrls:[]);seenPlaceIds=new Set(Array.isArray(state.seenPlaceIds)?state.seenPlaceIds:[]);acceptedKeys=new Set(Array.isArray(state.acceptedKeys)?state.acceptedKeys:[]);if(!acceptedKeys.size)state.data.forEach(x=>acceptedKeys.add(stableKey(x)));}
-      if(stored?.[BATCH_KEY]?.status){batch={...blankBatch(),...stored[BATCH_KEY],queue:Array.isArray(stored[BATCH_KEY].queue)?stored[BATCH_KEY].queue:[],data:Array.isArray(stored[BATCH_KEY].data)?stored[BATCH_KEY].data:[],finalData:Array.isArray(stored[BATCH_KEY].finalData)?stored[BATCH_KEY].finalData:[],filterStats:{...blankBatch().filterStats,...(stored[BATCH_KEY].filterStats||{})},warnings:Array.isArray(stored[BATCH_KEY].warnings)?stored[BATCH_KEY].warnings:[],cardCache:stored[BATCH_KEY].cardCache&&typeof stored[BATCH_KEY].cardCache==='object'?stored[BATCH_KEY].cardCache:{}};if(batch.filterStatus==='RUNNING'){batch.filterStatus='ERROR';batch.filterPhase='ERROR';batch.filterError='Локальная фильтрация была прервана перезагрузкой страницы. RAW-данные сохранены; запустите фильтрацию ещё раз.';}}
-    }catch{}
+      stored=await chrome.storage.local.get([AUTO_KEY,BATCH_KEY]);
+      // Never let a migration failure hide the control state - the registry is
+      // still in chrome.storage at that point and is not touched on failure.
+      try{await migrateLegacyDataset(stored);}catch(e){blog('dataset migration failed',e?.message||e);}
+      if(stored?.[AUTO_KEY]?.status){state={...blankAuto(),...stored[AUTO_KEY]};delete state.data;seenUrls=new Set(Array.isArray(state.seenUrls)?state.seenUrls:[]);seenPlaceIds=new Set(Array.isArray(state.seenPlaceIds)?state.seenPlaceIds:[]);acceptedKeys=new Set(Array.isArray(state.acceptedKeys)?state.acceptedKeys:[]);}
+      if(stored?.[BATCH_KEY]?.status){batch={...blankBatch(),...stored[BATCH_KEY],queue:Array.isArray(stored[BATCH_KEY].queue)?stored[BATCH_KEY].queue:[],filterStats:{...blankBatch().filterStats,...(stored[BATCH_KEY].filterStats||{})},warnings:Array.isArray(stored[BATCH_KEY].warnings)?stored[BATCH_KEY].warnings:[]};delete batch.data;delete batch.cardCache;delete batch.finalData;if(batch.filterStatus==='RUNNING'){batch.filterStatus='ERROR';batch.filterPhase='ERROR';batch.filterError='Локальная фильтрация была прервана перезагрузкой страницы. RAW-данные сохранены; запустите фильтрацию ещё раз.';}}
+    }catch(e){blog('restore failed',e?.message||e);}
+    // The store is the source of truth for the totals, not the snapshot.
+    try{batch={...batch,...await storeTotals()};}catch(e){blog('store unavailable',e?.message||e);}
     render();
 
     // Batch owns navigation while active. Do not apply the single-query mismatch stop rule.

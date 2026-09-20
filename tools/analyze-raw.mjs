@@ -4,31 +4,13 @@
 // the local filter would accept, using the extension's own classifier.
 //   node tools/analyze-raw.mjs <export.csv>
 import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import vm from 'node:vm';
+import { loadExtension } from './harness.mjs';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const file = process.argv[2];
 if (!file) { console.error('usage: node tools/analyze-raw.mjs <export.csv>'); process.exit(2); }
 
-const store = {};
-const el = { isConnected: false, scrollHeight: 0, clientHeight: 0, style: {}, className: '', querySelector: () => null, querySelectorAll: () => [], appendChild() {}, append() {}, remove() {}, addEventListener() {}, getBoundingClientRect: () => ({ left: 0 }), attachShadow: () => el };
-const sandbox = {
-  console, setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {}, Promise, URL, Date, Math, JSON, Number, String, Array, Object, Set, Map, Error,
-  document: { body: el, head: el, documentElement: el, getElementById: () => null, querySelector: () => null, querySelectorAll: () => [], createElement: () => ({ ...el }), addEventListener() {} },
-  location: { hostname: 'yandex.ru', pathname: '/maps/213/moscow/search/t/', href: 'https://yandex.ru/maps/213/moscow/search/t/', origin: 'https://yandex.ru', assign() {} },
-  window: { addEventListener() {}, innerWidth: 1600 }, navigator: { userAgent: 'node' },
-  MutationObserver: class { observe() {} disconnect() {} }, Blob: class {}, getComputedStyle: () => ({ overflowY: 'visible' }),
-  chrome: { runtime: { getURL: p => p, sendMessage() {}, lastError: null }, storage: { local: { async get() { return {}; }, async set(o) { Object.assign(store, o); }, async remove() {} } } },
-};
-sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-const src = readFileSync(join(root, 'src/yandex-module.js'), 'utf8');
-const patched = src.replace(/\n\s*void ensureGeo\(\)[\s\S]*?\n\s*restore\(\);mount\(\);/,
-  '\nglobalThis.__t={parseRawCsv,parseDelimited,evaluateItem,sourceRecords,ensureGeo,normalizeCoords};\n');
-vm.runInContext(patched, sandbox);
-const t = sandbox.__t;
+// No store needed: the audit only uses the pure parsing and classification.
+const { api: t } = await loadExtension();
 
 const text = readFileSync(file, 'utf8');
 const rows = t.parseDelimited(text);
@@ -118,7 +100,7 @@ if (isFinal) {
   const stats = { accepted: 0, rejectedCategory: 0, rejectedDistrict: 0, rejectedNoCoords: 0, ambiguous: 0 };
   const detected = new Map();
   for (const item of parsed.data) {
-    const recs = t.sourceRecords(item);
+    const recs = globalThis.GLSRecord.sourceRecords(item);
     const decisions = [];
     for (const r of recs) decisions.push(await t.evaluateItem(item, r));
     const ok = decisions.filter(d => d.accept);

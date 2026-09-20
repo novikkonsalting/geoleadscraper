@@ -8,13 +8,22 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const vendor = readFileSync(join(root, 'vendor/mapscan-content.iife.js'), 'utf8');
-const module_ = readFileSync(join(root, 'src/yandex-module.js'), 'utf8');
-const out = join(root, 'extension/content/index.iife.js');
+const read = p => readFileSync(join(root, p), 'utf8');
 
-writeFileSync(out, vendor + module_, 'utf8');
-const version = JSON.parse(readFileSync(join(root, 'extension/manifest.json'), 'utf8')).version;
-console.log(`built ${out} (${vendor.length} vendor + ${module_.length} module bytes), manifest ${version}`);
+// Two bundles, each assembled as vendor code + shared record helpers + our own
+// module. shared-record.js must come first in both: the content module and the
+// store worker read globalThis.GLSRecord at their top level.
+const targets = [
+  { out: 'extension/content/index.iife.js', parts: ['vendor/mapscan-content.iife.js', 'src/shared-record.js', 'src/yandex-module.js'] },
+  { out: 'extension/service-worker.js', parts: ['vendor/mapscan-service-worker.js', 'src/shared-record.js', 'src/store-worker.js'] },
+];
+for (const target of targets) {
+  const body = target.parts.map(read).join('\n');
+  writeFileSync(join(root, target.out), body, 'utf8');
+  console.log(`built ${target.out} (${body.length} bytes from ${target.parts.length} parts)`);
+}
+const version = JSON.parse(read('extension/manifest.json')).version;
+console.log(`manifest ${version}`);
 
 if (process.argv.includes('--project-zip')) {
   const dist = join(root, 'dist');

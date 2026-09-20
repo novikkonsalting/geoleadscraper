@@ -1,4 +1,4 @@
-# GeoLeadScraper — Yandex Maps AUTO + BATCH (v1.4.2)
+# GeoLeadScraper — Yandex Maps AUTO + BATCH (v1.5.0)
 
 Сбор справочника организаций ЮЗАО Москвы по схеме **COLLECT RAW → LOCAL FILTER → FINAL**.
 
@@ -9,12 +9,17 @@ Google Maps и 2GIS части проекта не затрагиваются: �
 
 | Путь | Что это |
 |---|---|
-| `src/yandex-module.js` | Единственный редактируемый исходник: AUTO, BATCH, RAW export/import, локальный GEO-фильтр, UI. |
+| `src/yandex-module.js` | Content script: AUTO, BATCH, RAW export/import, локальный GEO-фильтр, UI. |
+| `src/store-worker.js` | Хранилище датасета на IndexedDB, живёт в service worker расширения. |
+| `src/shared-record.js` | Ключевание, слияние и дедуп организаций. Собирается в оба бандла — единственное определение того, что считается одной организацией. |
 | `vendor/mapscan-content.iife.js` | Upstream-бандл content script (Google Maps, 2GIS, Yandex extractor `window.__glsYandexFetch`). Не редактируется. |
+| `vendor/mapscan-service-worker.js` | Upstream service worker. Не редактируется. |
 | `extension/` | Распакованное расширение для Chrome (`Загрузить распакованное расширение`). |
 | `dist/` | Упакованный ZIP расширения. |
 | `tools/build.mjs` | `vendor + src → extension/content/index.iife.js`, опционально ZIP. |
-| `tools/smoke-test.mjs` | Тесты парсинга CSV, dedupe, нормализации координат и офлайн-классификации районов. |
+| `tools/harness.mjs` | Загружает расширение в Node с реальным IndexedDB и настоящим путём `sendMessage`. |
+| `tools/smoke-test.mjs` | Тесты хранилища, дедупа, CSV, координат, гео и миграции с v1.4.x. |
+| `tools/bench-store.mjs` | Замер старого (`chrome.storage`) и нового (IndexedDB) пути записи. |
 | `tools/geo-check.mjs` | Контроль качества границ: regression probes, 16 контрольных точек, перекрытия, площади. |
 | `tools/analyze-raw.mjs` | Аудит RAW/FINAL CSV + прогон локального фильтра без Chrome. |
 
@@ -26,10 +31,27 @@ node tools/build.mjs --project-zip  # ZIP всего проекта (в git не
 node tools/smoke-test.mjs      # обязательный прогон перед коммитом
 node tools/geo-check.mjs       # качество встроенных границ
 node tools/analyze-raw.mjs geoleadscraper-yandex_maps-RAW_ALL-*.csv
+node tools/bench-store.mjs 4000   # во что обходится запись датасета
 ```
 
-`tools/build.mjs` — единственный способ получить `extension/content/index.iife.js`.
-Правки прямо в `extension/` будут затёрты следующей сборкой.
+Перед первым прогоном тестов: `npm install` (единственная зависимость —
+`fake-indexeddb`, только для тестов; в расширение ничего не попадает).
+
+`tools/build.mjs` — единственный способ получить `extension/content/index.iife.js`
+и `extension/service-worker.js`. Правки прямо в `extension/` будут затёрты
+следующей сборкой.
+
+## Где лежат данные
+
+Собранный реестр хранится в IndexedDB базы `geoleadscraper`, принадлежащей
+**расширению**, а не сайту. Очистка данных yandex.ru его не трогает. В
+`chrome.storage.local` остаётся только управляющее состояние: статус, очередь
+запросов и счётчики.
+
+Единственное действие, которое удаляет собранные данные, — кнопка
+`RESET BATCH — УДАЛИТЬ RAW (N)`. `IMPORT RAW CSV` заменяет реестр импортируемым
+файлом. Данные из версий 1.4.x переносятся в IndexedDB автоматически при первом
+запуске.
 
 ## Порядок работы в Chrome
 
