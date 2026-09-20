@@ -1,0 +1,11 @@
+GeoLeadScraper v1.4.1 FINAL LOCAL-GEO static regression check
+
+Input: geoleadscraper-yandex_maps-RAW_ALL-20260919183348.csv
+RAW rows / unique place_id: 466 / 466
+Academic polygon matches: 26
+Restaurant category + Academic polygon: 26
+Control point 55.6875,37.5730 -> Academic: PASS
+Former false positive 55.644762,37.525993 -> Academic: PASS (rejected)
+Former false positive 55.647731,37.482145 -> Academic: PASS (rejected)
+
+Runtime GEO has no external-network dependency.

@@ -1,0 +1,20 @@
+GeoLeadScraper v1.3.0 FAST+FILTER
+
+PERFORMANCE
+- FAST DEDUPE: place_id извлекается из URL до fetch карточки.
+- Одинаковый URL не считается повторно на каждом scroll-cycle.
+- Другой URL того же place_id пропускается без fetch.
+- Общий cardCache сохраняет карточки между запросами BATCH.
+- Повторная карточка из cardCache не получает сетевую задержку.
+- Задержка после реально новой сетевой карточки: ~550–730 мс.
+- chrome.storage.local больше не перезаписывается после каждого микросчётчика: записи сгруппированы примерно раз в 350 мс.
+
+FILTER
+- Для BATCH проверяется actual Yandex categories против category из CSV.
+- Явный category mismatch не попадает в итоговый реестр.
+- Явный другой район ЮЗАО в адресе также отбрасывается.
+- Добавлены поля category_validation, district_validation, detected_district.
+
+IMPORTANT
+- Новые storage keys v2: состояние старого BATCH v1.2.x автоматически не подхватывается.
+- Точная polygon validation района ещё не включена; district guard сейчас только на явных адресных данных.

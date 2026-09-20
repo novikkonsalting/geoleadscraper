@@ -1,0 +1,14 @@
+GeoLeadScraper v1.3.2 GEO-FIX
+
+Исправлено:
+- сбой `Unexpected end of JSON input` при загрузке границ районов;
+- основной GeoJSON заменён на более компактный OSM-derived набор районов Москвы;
+- добавлены 3 попытки загрузки для каждого источника и два fallback-источника;
+- добавлена проверка целостности GeoJSON до JSON.parse;
+- background fetch теперь проверяет HTTP status, пустой ответ и имеет timeout 45 секунд;
+- геокэш переведён на v2, чтобы не использовать неудачный кэш v1;
+- CSV со списком официальных источников теперь получает понятное сообщение, что он НЕ предназначен для Yandex BATCH;
+- версия UI: v1.3.2 GEO-FIX.
+
+Файл для Yandex BATCH: uzao_yandex_optimized_132.csv
+Файл uzao_official_sources_36.csv используется отдельно и в GeoLeadScraper не загружается.

@@ -1,0 +1,25 @@
+GeoLeadScraper v1.4.0 RAW-FIRST
+
+Главное изменение архитектуры:
+- BATCH больше НЕ зависит от геофильтра или категорийного фильтра во время сбора.
+- Сначала собирается максимально полный RAW-реестр по всем запросам.
+- FAST dedupe и общий card cache сохранены.
+- После завершения пользователь может экспортировать RAW_ALL.csv.
+- Локальная фильтрация запускается отдельной кнопкой FILTER RAW → FINAL.
+- Ошибка GeoJSON/полигона при фильтрации не удаляет RAW и не требует повторного парсинга Яндекса.
+- После успешной фильтрации доступен FINAL_FILTERED.csv.
+
+Новые поля FINAL:
+- matched_source_district
+- matched_source_group
+- matched_source_category
+- matched_source_query
+- matched_source_records
+- matched_source_queries_count
+- category_validation
+- district_validation
+- detected_district
+- final_status
+- exclude_reason
+
+Хранилище переведено на новые ключи v5, чтобы старые фильтрованные состояния v1.3.x не подмешивались.

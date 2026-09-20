@@ -1,0 +1,4 @@
+В GeoLeadScraper загружать: uzao_yandex_optimized_132.csv
+
+НЕ загружать: uzao_official_sources_36.csv
+Это отдельный список задач для ФНС/Минюста, у него намеренно нет колонки query.
