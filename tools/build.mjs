@@ -14,8 +14,10 @@ const read = p => readFileSync(join(root, p), 'utf8');
 // module. shared-record.js must come first in both: the content module and the
 // store worker read globalThis.GLSRecord at their top level.
 const targets = [
-  { out: 'extension/content/index.iife.js', parts: ['vendor/mapscan-content.iife.js', 'src/shared-record.js', 'src/yandex-module.js'] },
+  { out: 'extension/content/index.iife.js', parts: ['vendor/mapscan-content.iife.js', 'src/shared-record.js', 'src/shared-entities.js', 'src/yandex-module.js'] },
   { out: 'extension/service-worker.js', parts: ['vendor/mapscan-service-worker.js', 'src/shared-record.js', 'src/store-worker.js'] },
+  // Runs in the page's own world, injected by the content script.
+  { out: 'extension/page-hook.js', parts: ['src/shared-entities.js', 'src/page-hook.js'] },
 ];
 for (const target of targets) {
   const body = target.parts.map(read).join('\n');

@@ -44,6 +44,8 @@
     networkRequests: 0,
     fastSkippedDuplicates: 0,
     reusedFromBatchCache: 0,
+    fromList: 0,
+    listSeen: 0,
     scrolledEver: false,
     maxScrollTop: 0,
     warning: null,
@@ -72,6 +74,9 @@
     filterStartedAt: null,
     filterCompletedAt: null,
     filterStats: {processed:0,total:0,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,ambiguousDistrict:0,matchedSourceRecords:0},
+    enrichStatus: 'IDLE',
+    enrichStats: {processed:0,updated:0,failed:0,total:0},
+    pendingDetail: 0,
     geoInfo: null,
     geoError: null,
     warnings: [],
@@ -108,6 +113,58 @@
       resolve(response.data);
     });
   });
+  // ---- fast path ---------------------------------------------------------
+  // Organisations read out of data Yandex Maps already loaded for itself: the
+  // state-view script embedded in the search page, plus the JSON the SPA
+  // fetches as the list is scrolled, observed by page-hook.js.
+  //
+  // This is a cache, never a requirement. An entry is used only if it passes
+  // the same validation as a fetched card; anything missing or unrecognised
+  // sends the collector back to the per-card fetch, which is what every build
+  // before this one did for every single card.
+  const listEntities = new Map();
+  const LIST_ENTITY_LIMIT = 20000;
+  const rememberEntities = items => {
+    let added = 0;
+    for (const item of items || []) {
+      if (!item?.place_id || listEntities.has(item.place_id)) continue;
+      if (listEntities.size >= LIST_ENTITY_LIMIT) listEntities.delete(listEntities.keys().next().value);
+      listEntities.set(item.place_id, item);
+      added++;
+    }
+    return added;
+  };
+  // The hook shares a realm with the page, so these messages cannot be
+  // authenticated. They are treated as untrusted input: shape-validated on
+  // arrival, and every field goes through the same normalisation as a fetched
+  // card before it reaches the registry.
+  window.addEventListener('message', event => {
+    if (event.source !== window) return;
+    const entities = event.data?.__glsEntities;
+    if (!Array.isArray(entities)) return;
+    const added = rememberEntities(entities.filter(x => globalThis.GLSEntities.asItem({...x, id: x?.place_id, coordinates: [x?.latitude, x?.longitude]})));
+    if (added) state.listSeen = (state.listSeen || 0) + added;
+  });
+  // The first page of results is already in the document when the page loads,
+  // before the hook can observe anything.
+  const seedFromDocument = () => {
+    try {
+      const script = document.querySelector('script.state-view, script[class*="state-view"]');
+      if (!script?.textContent) return 0;
+      return rememberEntities(globalThis.GLSEntities.fromText(script.textContent));
+    } catch { return 0; }
+  };
+  const injectPageHook = () => {
+    try {
+      if (document.getElementById('gls-page-hook')) return;
+      const el = document.createElement('script');
+      el.id = 'gls-page-hook';
+      el.src = chrome.runtime.getURL('page-hook.js');
+      el.onload = () => el.remove();
+      (document.head || document.documentElement).appendChild(el);
+    } catch (e) { log('page hook injection failed', e?.message || e); }
+  };
+
   // Streams a store page by page so that neither the filter nor the export
   // ever holds the whole registry in memory.
   const eachStored = async (op, onPage) => {
@@ -460,7 +517,7 @@
     const parser = window.__glsYandexFetch;
     if (typeof parser !== 'function') throw new Error('Existing Yandex extractor is not available in this build.');
     const urls = orgUrls(container), candidates = urls.length ? urls : orgUrls(document);
-    const stats = {candidateUrls:candidates.length,newUrls:0,repeatedUrls:0,acceptedUnique:0,duplicateItems:0,fastSkipped:0,cacheReused:0,rejected:0};
+    const stats = {candidateUrls:candidates.length,newUrls:0,repeatedUrls:0,acceptedUnique:0,duplicateItems:0,fastSkipped:0,cacheReused:0,fromList:0,rejected:0};
     for (const url of candidates) {
       if (token !== runToken || state.status !== AUTO.RUNNING) return stats;
       const pidFromUrl=placeIdFromUrl(url);
@@ -474,18 +531,31 @@
       stats.newUrls++; seenUrls.add(url); if(pidFromUrl)seenPlaceIds.add(pidFromUrl);
       await patchAuto({totalEncountered:state.totalEncountered+1});
 
-      let item=pidFromUrl ? await store('getRawByPlaceId',{place_id:pidFromUrl}) : null, fromCache=!!item;
+      // Source preference, cheapest first:
+      //   1. already in the registry from an earlier query - no work at all;
+      //   2. the page's own list data - no request;
+      //   3. the upstream per-card fetch - one HTML page plus a politeness
+      //      delay, which is what every earlier build did for every card.
+      let item=pidFromUrl ? await store('getRawByPlaceId',{place_id:pidFromUrl}) : null;
+      let fromCache=!!item, detailLevel=item?.detail_level||'CARD';
       if(item){stats.cacheReused++;await patchAuto({reusedFromBatchCache:state.reusedFromBatchCache+1});}
+      else if(pidFromUrl && listEntities.has(pidFromUrl)){
+        item={...listEntities.get(pidFromUrl),maps_url:url};
+        delete item.seoname;
+        detailLevel='LIST';
+        stats.fromList++;
+        await patchAuto({fromList:state.fromList+1});
+      }
       else{
         try{item=await parser(url,{extractWebsites:false});}catch{item=null;}
         if(token!==runToken||state.status!==AUTO.RUNNING)return stats;
         if(!item)continue;
-        fromCache=false;
+        fromCache=false;detailLevel='CARD';
         await patchAuto({networkRequests:state.networkRequests+1});
       }
 
       item=normalizeCoords(item);
-      const enriched={...item,source:'yandex_maps',source_query:state.currentSearchQuery,category_validation:'UNKNOWN',district_validation:'UNKNOWN',detected_district:'',final_status:'RAW',exclude_reason:''};
+      const enriched={...item,source:'yandex_maps',source_query:state.currentSearchQuery,detail_level:detailLevel,category_validation:'UNKNOWN',district_validation:'UNKNOWN',detected_district:'',final_status:'RAW',exclude_reason:''};
       // RAW-FIRST: collection never depends on category/GEO filtering.
       // Every unique card is preserved; filtering is a separate local post-process.
       const key=stableKey(enriched);
@@ -498,7 +568,9 @@
       if(batch.uniqueCount!==totals.rawUnique||batch.sourceHits!==totals.rawSourceHits){
         batch={...batch,uniqueCount:totals.rawUnique,sourceHits:totals.rawSourceHits};
       }
-      if(!fromCache && CFG.CARD_DELAY_MS>0)await sleep(CFG.CARD_DELAY_MS+Math.floor(Math.random()*180));
+      // The delay exists to be polite to Yandex. It is owed for a request, and
+      // the fast path makes none.
+      if(!fromCache && detailLevel==='CARD' && CFG.CARD_DELAY_MS>0)await sleep(CFG.CARD_DELAY_MS+Math.floor(Math.random()*180));
     }
     return stats;
   };
@@ -610,6 +682,9 @@
 
   const startAuto = async () => {
     runToken++;
+    injectPageHook();
+    const seeded=seedFromDocument();
+    if(seeded)log('seeded from page state-view',{entities:seeded});
     seenUrls.clear(); seenPlaceIds.clear(); acceptedKeys.clear();
     state = {...blankAuto(),status:AUTO.RUNNING,startTime:Date.now(),lastProgressTime:Date.now(),currentSearchQuery:getQuery()};
     await persistAuto(true); log('started',{query:state.currentSearchQuery}); ensureLoop();
@@ -621,8 +696,67 @@
 
   const storeTotals = async () => {
     const t=await store('stats');
-    return {uniqueCount:t.rawUnique,sourceHits:t.rawSourceHits,finalCount:t.finalCount};
+    return {uniqueCount:t.rawUnique,sourceHits:t.rawSourceHits,finalCount:t.finalCount,pendingDetail:t.pendingDetail||0};
   };
+
+  // Second pass over the registry: fetches the org card only for rows that were
+  // read from the page's list data and are still missing card-only fields.
+  //
+  // Separate from collection on purpose. Collection is now cheap, so the
+  // expensive part is isolated where it can be stopped, resumed and re-run
+  // without touching Yandex's result lists again. Progress lives in the store,
+  // so a row leaves the queue the moment it is enriched.
+  let enrichStop=false;
+  const enrichCards = async (scope='all') => {
+    const parser=window.__glsYandexFetch;
+    if(typeof parser!=='function')throw new Error('Yandex extractor недоступен в этой сборке.');
+    if(batch.enrichStatus==='RUNNING')return;
+    enrichStop=false;
+    const op=scope==='final'?'listPendingDetailFinal':'listPendingDetail';
+    const totals=await storeTotals();
+    // For the FINAL-only pass the size is not known up front: counting it on
+    // every render would mean scanning the final register on the hot path.
+    const first=await store(op,{limit:100});
+    const stats={processed:0,updated:0,failed:0,total:scope==='final'?first.length:totals.pendingDetail,scope};
+    if(!first.length){await patchBatch({enrichStatus:'IDLE',enrichStats:stats,...totals});return;}
+    await patchBatch({enrichStatus:'RUNNING',enrichStats:stats,error:null});
+    blog('enrich started',{scope,pending:stats.total});
+    try{
+      let pending=first;
+      while(!enrichStop){
+        if(!pending.length)break;
+        for(const row of pending){
+          if(enrichStop)break;
+          const url=row.maps_url;
+          let card=null;
+          if(url){try{card=await parser(url,{extractWebsites:false});}catch{card=null;}}
+          if(card){
+            await store('enrichRaw',{records:[{key:row.key,fields:card}]});
+            stats.updated++;
+          }else{
+            // Leaves the queue either way - a row that cannot be fetched must
+            // not make the pass loop over it forever - but keeps its own mark,
+            // so the export says which rows never got a card. The collected
+            // data itself is untouched.
+            await store('enrichRaw',{records:[{key:row.key,fields:{},detailLevel:'LIST_ONLY'}]});
+            stats.failed++;
+          }
+          stats.processed++;
+          if(stats.processed%10===0)await patchBatch({enrichStats:{...stats}});
+          if(!enrichStop&&CFG.CARD_DELAY_MS>0)await sleep(CFG.CARD_DELAY_MS+Math.floor(Math.random()*180));
+        }
+        if(enrichStop)break;
+        pending=await store(op,{limit:100});
+        if(scope==='final')stats.total=stats.processed+pending.length;
+      }
+      await patchBatch({enrichStatus:enrichStop?'STOPPED':'COMPLETED',enrichStats:{...stats},...await storeTotals()});
+      blog('enrich finished',{...stats,stopped:enrichStop});
+    }catch(e){
+      await patchBatch({enrichStatus:'ERROR',enrichStats:{...stats},error:e?.message||String(e)});
+      blog('enrich error',e?.message||e);
+    }
+  };
+  const stopEnrich = () => { enrichStop=true; };
 
   const csvCell = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
   const csvRows = (rows,fields) => rows.map(row => fields.map(f => csvCell(row[f])).join(',')).join('\r\n');
@@ -634,7 +768,7 @@
     const blob = new Blob(parts,{type:'text/csv;charset=utf-8;'}), url=URL.createObjectURL(blob), a=document.createElement('a');
     a.href=url; a.download=`${name}-${new Date().toISOString().replace(/[-:TZ.]/g,'').slice(0,14)}.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   };
-  const RAW_FIELDS=['source_district','source_group','source_category','title','address','phone','website','maps_url','source','source_query','source_queries_count','source_records','place_id','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'];
+  const RAW_FIELDS=['source_district','source_group','source_category','detail_level','title','address','phone','website','maps_url','source','source_query','source_queries_count','source_records','place_id','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'];
   const RAW_META_FIELDS=['export_batch_status','export_queries_total','export_queries_completed','export_queries_low_yield','export_warnings'];
   // A RAW file must be able to explain itself: a truncated or low-yield run
   // is otherwise indistinguishable from a genuinely small result set.
@@ -918,7 +1052,7 @@
   const singleHtml = () => {
     if(batch.status!==BATCH.IDLE)return '';
     const q=state.currentSearchQuery?`<div style="margin-top:4px;font-size:11px;word-break:break-word">Запрос: ${esc(state.currentSearchQuery)}</div>`:'';
-    const stats=state.status===AUTO.IDLE?'':`<div style="margin-top:6px;line-height:1.5"><div>Уникальных ID просмотрено: ${state.totalEncountered}</div><div>Уникальных: ${state.uniqueCount}</div><div>Дублей/повторов: ${state.duplicatesCount}</div><div>Сетевых карточек: ${state.networkRequests}</div><div>FAST skip: ${state.fastSkippedDuplicates}</div><div>Из общего кэша: ${state.reusedFromBatchCache}</div><div>Прокрутка списка: ${state.scrolledEver?'да':'НЕТ'}</div><div>Без новых данных: ${state.noProgressCycles} / ${CFG.NO_PROGRESS_LIMIT}</div>${q}</div>`;
+    const stats=state.status===AUTO.IDLE?'':`<div style="margin-top:6px;line-height:1.5"><div>Уникальных ID просмотрено: ${state.totalEncountered}</div><div>Уникальных: ${state.uniqueCount}</div><div>Дублей/повторов: ${state.duplicatesCount}</div><div>Сетевых карточек: ${state.networkRequests}</div><div>FAST skip: ${state.fastSkippedDuplicates}</div><div>Из общего кэша: ${state.reusedFromBatchCache}</div><div>Из выдачи без запроса: ${state.fromList}</div><div>Прокрутка списка: ${state.scrolledEver?'да':'НЕТ'}</div><div>Без новых данных: ${state.noProgressCycles} / ${CFG.NO_PROGRESS_LIMIT}</div>${q}</div>`;
     const err=state.error?`<div style="margin-top:6px;color:#a16207;font-size:11px;word-break:break-word">${esc(state.error)}</div>`:'';
     let buttons='';
     if(state.status===AUTO.IDLE)buttons=btn('AUTO COLLECT · ОДИН ЗАПРОС','auto-start');
@@ -957,6 +1091,7 @@
           `<div style="margin-top:4px;font-size:11px;color:#444">${esc(activity)}</div>`+
           `<div style="display:grid;grid-template-columns:1fr auto;gap:3px 10px;margin-top:7px;padding-top:6px;border-top:1px solid #eee;font-size:11px">`+
             `<span>RAW уникальных в запросе</span><b>${state.uniqueCount}</b>`+
+            `<span>Из выдачи без запроса</span><b>${state.fromList}</b>`+
             `<span>Новых сетевых карточек</span><b>${state.networkRequests}</b>`+
             `<span>FAST skip дублей</span><b>${state.fastSkippedDuplicates}</b>`+
             `<span>Из общего кэша</span><b>${state.reusedFromBatchCache}</b>`+
@@ -992,6 +1127,19 @@
       if(batch.filterError)filter+=`<div style="margin-top:5px;color:#a16207;word-break:break-word">Фильтр: ${esc(batch.filterError)}. RAW-данные сохранены.</div>`;
       filter+='</div>';
     }
+    const es=batch.enrichStats||{processed:0,updated:0,failed:0,total:0};
+    const enrichRunning=batch.enrichStatus==='RUNNING';
+    const enrichPct=es.total?Math.round(es.processed/es.total*100):0;
+    let enrich='';
+    if((finished||error)&&(batch.pendingDetail||enrichRunning||es.processed)){
+      enrich=`<div style="margin-top:8px;padding:9px;border:1px solid #e5e7eb;border-radius:7px;background:#fafafa;font-size:11px">`+
+        `<div style="display:flex;justify-content:space-between;gap:8px"><b>ДОЗАГРУЗКА КАРТОЧЕК</b><b>${enrichRunning?enrichPct+'%':batch.enrichStatus==='COMPLETED'?'ГОТОВО':batch.enrichStatus==='STOPPED'?'ОСТАНОВЛЕНА':batch.pendingDetail?'НЕ ЗАПУЩЕНА':'НЕ ТРЕБУЕТСЯ'}</b></div>`+
+        `<div style="margin-top:3px">Строк из выдачи без карточки: <b>${batch.pendingDetail||0}</b></div>`+
+        (enrichRunning?bar(enrichPct)+`<div style="margin-top:4px">Дозагружено ${es.processed} / ${es.total}, обновлено ${es.updated}, не удалось ${es.failed}</div>`:'')+
+        (!enrichRunning&&es.processed?`<div style="margin-top:4px">Обновлено ${es.updated}, не удалось ${es.failed}</div>`:'')+
+        `<div style="margin-top:4px;color:#555">Сбор берёт данные из самой выдачи и не запрашивает карточку каждой организации. Телефон, сайт и часы работы догружаются здесь — отдельно, с паузами, это можно прервать и продолжить. Выгоднее сначала прогнать FILTER RAW → FINAL и дозагрузить только принятые.</div>`+
+      `</div>`;
+    }
     const warnList=(batch.warnings||[]);
     const warnBlock=warnList.length?`<div style="margin-top:8px;padding:8px;border:1px solid #f0c674;border-radius:7px;background:#fffbeb;font-size:11px;color:#7c5a00"><b>НЕПОЛНЫЙ СБОР: ${warnList.length} запрос(ов)</b>${warnList.slice(0,6).map(w=>`<div style="margin-top:3px;word-break:break-word">• ${esc(w.query)} → ${w.unique} карточек</div>`).join('')}${warnList.length>6?`<div style="margin-top:3px">…ещё ${warnList.length-6}</div>`:''}<div style="margin-top:4px">EXPORT RAW пометит файл как RAW_PARTIAL.</div></div>`:'';
     const geoSource=geoCache?.source||'не загружены';
@@ -1006,10 +1154,15 @@
     if(paused||action)buttons=btn('RESUME BATCH','batch-resume')+btn('STOP BATCH','batch-stop');
     if(finished||error){
       buttons+=btn('IMPORT RAW CSV','batch-raw-file');
+      if(enrichRunning)buttons+=btn('ОСТАНОВИТЬ ДОЗАГРУЗКУ','enrich-stop');
+      else if(batch.pendingDetail){
+        if(filterCompleted&&batch.finalCount)buttons+=btn('ДОЗАГРУЗИТЬ ТОЛЬКО ПРИНЯТЫЕ В FINAL','enrich-final');
+        buttons+=btn(`ДОЗАГРУЗИТЬ ВСЕ КАРТОЧКИ (${batch.pendingDetail})`,'enrich-start');
+      }
       if(batch.uniqueCount){buttons+=btn(`EXPORT RAW (${batch.uniqueCount})`,'batch-export-raw');if(!filterRunning)buttons+=btn(filterCompleted||filterError?'ПЕРЕФИЛЬТРОВАТЬ RAW → FINAL':'FILTER RAW → FINAL','batch-filter');if(filterCompleted&&batch.finalCount)buttons+=btn(`EXPORT FINAL (${batch.finalCount})`,'batch-export-final');}
       if(!filterRunning)buttons+=btn(`RESET BATCH — УДАЛИТЬ RAW (${batch.uniqueCount})`,'batch-reset','color:#a16207');
     }
-    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.5.0 IDB-STORE</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${geoBlock}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-geo-file" type="file" accept=".geojson,.json,application/geo+json,application/json" style="display:none"></div>`;
+    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.6.0 LIST-FIRST</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${enrich}${filter}${geoBlock}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-geo-file" type="file" accept=".geojson,.json,application/geo+json,application/json" style="display:none"></div>`;
   };
 
   const render = () => {
@@ -1020,6 +1173,9 @@
       'batch-start':()=>startBatch().catch(batchFatal),'batch-pause':pauseBatch,'batch-resume':resumeBatch,'batch-stop':stopBatch,'batch-reset':()=>resetBatch().catch(batchFatal),'batch-export-raw':()=>exportBatchRaw().catch(batchFatal),'batch-filter':()=>filterBatch().catch(batchFatal),'batch-export-final':()=>exportBatchFinal().catch(batchFatal),
       'batch-file':()=>panel.querySelector('#gls-batch-file')?.click(),
       'batch-raw-file':()=>panel.querySelector('#gls-raw-file')?.click(),
+      'enrich-start':()=>enrichCards('all').catch(batchFatal),
+      'enrich-final':()=>enrichCards('final').catch(batchFatal),
+      'enrich-stop':stopEnrich,
       'geo-file':()=>panel.querySelector('#gls-geo-file')?.click(),
       'geo-reset':()=>resetGeoToEmbedded().catch(e=>patchBatch({geoError:e?.message||String(e)})),
     };
@@ -1073,7 +1229,7 @@
       // still in chrome.storage at that point and is not touched on failure.
       try{await migrateLegacyDataset(stored);}catch(e){blog('dataset migration failed',e?.message||e);}
       if(stored?.[AUTO_KEY]?.status){state={...blankAuto(),...stored[AUTO_KEY]};delete state.data;seenUrls=new Set(Array.isArray(state.seenUrls)?state.seenUrls:[]);seenPlaceIds=new Set(Array.isArray(state.seenPlaceIds)?state.seenPlaceIds:[]);acceptedKeys=new Set(Array.isArray(state.acceptedKeys)?state.acceptedKeys:[]);}
-      if(stored?.[BATCH_KEY]?.status){batch={...blankBatch(),...stored[BATCH_KEY],queue:Array.isArray(stored[BATCH_KEY].queue)?stored[BATCH_KEY].queue:[],filterStats:{...blankBatch().filterStats,...(stored[BATCH_KEY].filterStats||{})},warnings:Array.isArray(stored[BATCH_KEY].warnings)?stored[BATCH_KEY].warnings:[]};delete batch.data;delete batch.cardCache;delete batch.finalData;if(batch.filterStatus==='RUNNING'){batch.filterStatus='ERROR';batch.filterPhase='ERROR';batch.filterError='Локальная фильтрация была прервана перезагрузкой страницы. RAW-данные сохранены; запустите фильтрацию ещё раз.';}}
+      if(stored?.[BATCH_KEY]?.status){batch={...blankBatch(),...stored[BATCH_KEY],queue:Array.isArray(stored[BATCH_KEY].queue)?stored[BATCH_KEY].queue:[],filterStats:{...blankBatch().filterStats,...(stored[BATCH_KEY].filterStats||{})},warnings:Array.isArray(stored[BATCH_KEY].warnings)?stored[BATCH_KEY].warnings:[]};delete batch.data;delete batch.cardCache;delete batch.finalData;if(batch.filterStatus==='RUNNING'){batch.filterStatus='ERROR';batch.filterPhase='ERROR';batch.filterError='Локальная фильтрация была прервана перезагрузкой страницы. RAW-данные сохранены; запустите фильтрацию ещё раз.';}if(batch.enrichStatus==='RUNNING')batch.enrichStatus='STOPPED';}
     }catch(e){blog('restore failed',e?.message||e);}
     // The store is the source of truth for the totals, not the snapshot.
     try{batch={...batch,...await storeTotals()};}catch(e){blog('store unavailable',e?.message||e);}
@@ -1097,6 +1253,8 @@
   const uiTicker=setInterval(()=>{if([BATCH.RUNNING,BATCH.PAUSED,BATCH.USER_ACTION_REQUIRED].includes(batch.status)||state.status===AUTO.RUNNING)render();},1000);
   window.addEventListener('unload',()=>clearInterval(uiTicker),{once:true});
   const mo=new MutationObserver(()=>{if(!getPanel())render();});mo.observe(document.documentElement,{subtree:true,childList:true});
+  injectPageHook();
+  setTimeout(()=>{const seeded=seedFromDocument();if(seeded)log('seeded from page state-view',{entities:seeded});},800);
   void ensureGeo().then(render).catch(e=>console.warn('[GEO] boundaries unavailable',e));
   restore();mount();
 })();

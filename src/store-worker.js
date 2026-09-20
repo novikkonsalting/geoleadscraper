@@ -14,7 +14,7 @@
 // so MV3 shutting it down mid-run is harmless.
 ;(() => {
   const DB_NAME = 'geoleadscraper';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   const RAW = 'raw', FINAL = 'final', META = 'meta';
   const TOTALS = 'totals';
   const { stableKey, mergeRecord, sourceRecords } = globalThis.GLSRecord;
@@ -25,10 +25,16 @@
     dbPromise = new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(RAW)) {
-          db.createObjectStore(RAW, { keyPath: 'key' }).createIndex('place_id', 'place_id', { unique: false });
-        }
+        const db = req.result, tx = req.transaction;
+        const raw = db.objectStoreNames.contains(RAW)
+          ? tx.objectStore(RAW)
+          : db.createObjectStore(RAW, { keyPath: 'key' });
+        if (!raw.indexNames.contains('place_id')) raw.createIndex('place_id', 'place_id', { unique: false });
+        // Rows collected from the page's own list data are marked LIST until a
+        // card fetch fills in the contact fields. Rows written before this
+        // index existed carry no detail_level, so they are absent from it -
+        // which is correct: they were all full card fetches.
+        if (!raw.indexNames.contains('detail_level')) raw.createIndex('detail_level', 'detail_level', { unique: false });
         if (!db.objectStoreNames.contains(FINAL)) db.createObjectStore(FINAL, { keyPath: 'key' });
         if (!db.objectStoreNames.contains(META)) db.createObjectStore(META, { keyPath: 'id' });
       };
@@ -120,6 +126,39 @@
     return rows;
   };
 
+  // Overlays freshly fetched card fields onto rows already in the registry.
+  // Deliberately not putRaw: that one keeps the stored version of a field and
+  // would discard exactly what the enrichment pass just fetched. The org card
+  // is the authoritative source, so a row read from the list and then enriched
+  // ends up identical to one collected by card fetch in the first place. Empty
+  // incoming values never erase stored ones, and provenance and the row key are
+  // never touched.
+  const enrichRaw = async ({ records }) => {
+    const wanted = (records || []).filter(x => x?.key && x.fields);
+    const db = await openDb();
+    const tx = db.transaction(RAW, 'readwrite');
+    const raw = tx.objectStore(RAW);
+    const existing = await Promise.all(wanted.map(x => promise(raw.get(x.key))));
+    const rows = [];
+    wanted.forEach((x, i) => {
+      const current = existing[i];
+      if (!current) return;
+      const next = { ...current };
+      for (const [field, value] of Object.entries(x.fields)) {
+        if (value === undefined || value === null || value === '') continue;
+        if (['key', 'place_id', 'source_records', 'source_queries_count', 'source_district', 'source_group', 'source_category', 'source_query'].includes(field)) continue;
+        next[field] = value;
+      }
+      next.detail_level = x.detailLevel || 'CARD';
+      rows.push(next);
+    });
+    await Promise.all(rows.map(row => promise(raw.put(row))));
+    await done(tx);
+    return { updated: rows.length };
+  };
+
+  const countPendingDetail = store => promise(store.index('detail_level').count('LIST')).catch(() => 0);
+
   const putFinal = async ({ records }) => {
     const db = await openDb();
     const tx = db.transaction([FINAL, META], 'readwrite');
@@ -171,10 +210,44 @@
 
   const stats = async () => {
     const db = await openDb();
-    const tx = db.transaction(META, 'readonly');
-    const totals = await readTotals(tx.objectStore(META));
+    const tx = db.transaction([META, RAW], 'readonly');
+    const [totals, pendingDetail] = await Promise.all([
+      readTotals(tx.objectStore(META)),
+      countPendingDetail(tx.objectStore(RAW)),
+    ]);
     await done(tx);
-    return { rawUnique: totals.rawUnique, rawSourceHits: totals.rawSourceHits, finalCount: totals.finalCount };
+    return { rawUnique: totals.rawUnique, rawSourceHits: totals.rawSourceHits, finalCount: totals.finalCount, pendingDetail };
+  };
+
+  // Pages over the rows still waiting for a card fetch. Driven off the index,
+  // so the pass is resumable: a row leaves the set as soon as it is enriched.
+  const listPendingDetail = async ({ limit = 200 }) => {
+    const db = await openDb();
+    const tx = db.transaction(RAW, 'readonly');
+    const rows = await promise(tx.objectStore(RAW).index('detail_level').getAll('LIST', limit));
+    await done(tx);
+    return rows || [];
+  };
+
+  // The same queue, narrowed to organisations that survived the local filter.
+  // RAW-first makes this possible: the registry is classified before any card
+  // is fetched, so the expensive pass can be limited to the rows that will
+  // actually end up in the final register.
+  const listPendingDetailFinal = async ({ limit = 200 }) => {
+    const db = await openDb();
+    const tx = db.transaction([FINAL, RAW], 'readonly');
+    const finalKeys = await promise(tx.objectStore(FINAL).getAllKeys());
+    const raw = tx.objectStore(RAW);
+    const rows = [];
+    for (let i = 0; i < finalKeys.length && rows.length < limit; i += 200) {
+      const slice = finalKeys.slice(i, i + 200);
+      const found = await Promise.all(slice.map(key => promise(raw.get(key))));
+      for (const row of found) {
+        if (row?.detail_level === 'LIST' && rows.length < limit) rows.push(row);
+      }
+    }
+    await done(tx);
+    return rows;
   };
 
   const OPS = {
@@ -183,6 +256,9 @@
     listRaw: args => page(RAW, args || {}),
     listFinal: args => page(FINAL, args || {}),
     putFinal,
+    enrichRaw,
+    listPendingDetail,
+    listPendingDetailFinal,
     clearRaw: () => clearStores([RAW, FINAL]),
     clearFinal: () => clearStores([FINAL]),
     recount,

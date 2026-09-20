@@ -41,7 +41,12 @@ export async function loadExtension({ withStore = false } = {}) {
     href: 'https://yandex.ru/maps/213/moscow/search/test/', origin: 'https://yandex.ru',
     search: '', assign() {},
   };
-  globalThis.window = { addEventListener() {}, innerWidth: 1600 };
+  const windowListeners = {};
+  globalThis.window = {
+    innerWidth: 1600,
+    addEventListener(type, fn) { (windowListeners[type] ||= []).push(fn); },
+    postMessage(data) { for (const fn of windowListeners.message || []) fn({ source: globalThis.window, data }); },
+  };
   globalThis.MutationObserver = class { observe() {} disconnect() {} };
   globalThis.getComputedStyle = () => ({ overflowY: 'visible' });
   globalThis.chrome = {
@@ -69,6 +74,7 @@ export async function loadExtension({ withStore = false } = {}) {
 
   const run = src => (0, eval)(src);
   run(read('src/shared-record.js'));
+  run(read('src/shared-entities.js'));
 
   if (withStore) run(read('src/store-worker.js'));
 
@@ -79,6 +85,8 @@ export async function loadExtension({ withStore = false } = {}) {
       parseRawCsv, parseBatchCsv, parseDelimited, normalizeCoords, detectGeoDistrict, categoryMatch,
       placeIdFromUrl, ensureGeo, evaluateItem, store, storeTotals, eachStored,
       loadRawText, filterBatch, resetBatch, restore, migrateLegacyDataset,
+      enrichCards, stopEnrich, seedFromDocument, rememberEntities,
+      getListEntities: () => listEntities,
       getBatch: () => batch, getState: () => state, STORE_PAGE,
     };\n`);
   if (!module_.includes('globalThis.__gls')) throw new Error('could not neutralise the module bootstrap for testing');
@@ -89,5 +97,14 @@ export async function loadExtension({ withStore = false } = {}) {
   globalThis.setInterval = () => 0;
   try { run(module_); } finally { globalThis.setInterval = realSetInterval; }
 
-  return { api: globalThis.__gls, shared: globalThis.GLSRecord, storage };
+  return {
+    api: globalThis.__gls,
+    shared: globalThis.GLSRecord,
+    entities: globalThis.GLSEntities,
+    storage,
+    // Simulates the page-world hook posting into the content script.
+    postFromPage: data => globalThis.window.postMessage(data),
+    setDocumentStateView: text => { globalThis.document.querySelector = sel => String(sel).includes('state-view') ? { textContent: text } : null; },
+    setCardFetcher: fn => { globalThis.window.__glsYandexFetch = fn; },
+  };
 }

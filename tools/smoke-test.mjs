@@ -134,6 +134,128 @@ section('reset');
 await api.resetBatch();
 check('RESET BATCH clears the registry', (await api.storeTotals()).uniqueCount === 0);
 
+// --- fast path: reading what the page already loaded -------------------------
+section('fast path');
+const orgEntity = (id, title, lon, lat, extra = {}) => ({
+  id, title, coordinates: [lon, lat],
+  address: `ул. Тестовая, ${id}`, categories: [{ name: 'Ресторан' }], ...extra,
+});
+const searchPayload = { stack: [{ results: { items: [
+  orgEntity('1175665694', 'Штолле', 37.572078, 55.687149, {
+    ratingData: { ratingValue: 4.5, ratingCount: 1060 }, workingTimeText: 'ежедневно, 08:00–22:00',
+    photos: { count: 112 }, features: [{ name: 'Wi-Fi' }], compositeAddress: { street: 'Профсоюзная улица' },
+    urls: ['https://msk.stolle.ru/'], phones: [{ value: '+74956444045' }], socialLinks: [{ href: 'https://t.me/x' }],
+  }),
+  orgEntity('231950595809', 'Ривьера', 37.57812, 55.700545),
+] } }] };
+
+const fast = await loadExtension({ withStore: true });
+check('entities are found by shape, wherever they sit in the payload',
+  fast.entities.fromJson(searchPayload).length === 2);
+check('field mapping matches the upstream card extractor',
+  (() => { const x = fast.entities.fromJson(searchPayload)[0];
+    return x.categories === 'Ресторан' && x.phone === '+74956444045' && x.website === 'https://msk.stolle.ru/'
+      && x.opening_hours === 'ежедневно, 08:00–22:00' && x.street === 'Профсоюзная улица' && x.review_count === 1060; })());
+check('coordinates keep the upstream convention that normalizeCoords repairs',
+  (() => { const x = fast.entities.fromJson(searchPayload)[0];
+    const n = fast.api.normalizeCoords(x); return n.latitude === 55.687149 && n.longitude === 37.572078; })());
+check('a non-organisation object is ignored',
+  fast.entities.fromJson({ a: { id: 'x', title: 'не организация', coordinates: [1] } }).length === 0);
+check('an id that is not a Yandex place_id is rejected',
+  fast.entities.fromJson({ a: orgEntity('abc', 'Чужое', 37.5, 55.6) }).length === 0);
+check('a payload with no organisations costs nothing', fast.entities.fromText('{"foo":1}').length === 0);
+check('malformed JSON does not throw', fast.entities.fromText('{"title":"x","coordinates":[1,2]') .length === 0);
+
+fast.postFromPage({ __glsEntities: fast.entities.fromJson(searchPayload) });
+check('the page hook feeds the collector through postMessage',
+  fast.api.getListEntities().size === 2, `${fast.api.getListEntities().size}`);
+fast.postFromPage({ __glsEntities: [{ place_id: 'not-an-id', title: 'x', latitude: 1, longitude: 2 }] });
+check('a forged entity from the page is rejected', fast.api.getListEntities().size === 2);
+fast.postFromPage({ somethingElse: true });
+check('unrelated page messages are ignored', fast.api.getListEntities().size === 2);
+
+fast.setDocumentStateView(JSON.stringify(searchPayload));
+fast.api.getListEntities().clear();
+check('the first page of results is seeded from the document, with no request',
+  fast.api.seedFromDocument() === 2);
+fast.setDocumentStateView('not json at all');
+fast.api.getListEntities().clear();
+check('an unreadable state-view just yields nothing', fast.api.seedFromDocument() === 0);
+
+// --- enrichment pass ---------------------------------------------------------
+section('card enrichment');
+await fast.api.store('clearRaw');
+await fast.api.store('putRaw', {
+  records: [
+    { place_id: '5000001', title: 'Из выдачи', maps_url: 'https://yandex.ru/maps/org/a/5000001/', detail_level: 'LIST' },
+    { place_id: '5000002', title: 'Без карточки', maps_url: 'https://yandex.ru/maps/org/b/5000002/', detail_level: 'LIST' },
+    { place_id: '5000003', title: 'Полная карточка', maps_url: 'https://yandex.ru/maps/org/c/5000003/', detail_level: 'CARD' },
+  ],
+  record: { district: 'Академический', group: 'Общепит', category: 'Ресторан', query: 'q1' },
+});
+check('rows from the list are queued for enrichment, full cards are not',
+  (await fast.api.storeTotals()).pendingDetail === 2, JSON.stringify(await fast.api.storeTotals()));
+
+fast.setCardFetcher(async url => url.includes('5000001')
+  ? { place_id: '5000001', title: 'Переименовано в карточке', phone: '+74951234567', website: 'https://example.ru/', email: 'a@b.ru' }
+  : null);
+await fast.api.enrichCards();
+const enriched = await fast.api.store('getRawByPlaceId', { place_id: '5000001' });
+check('enrichment fills in the card-only fields',
+  enriched.phone === '+74951234567' && enriched.website === 'https://example.ru/' && enriched.email === 'a@b.ru');
+check('the fetched card is authoritative, so an enriched row equals one collected by card fetch',
+  enriched.title === 'Переименовано в карточке', enriched.title);
+check('the enriched row is marked as a full card', enriched.detail_level === 'CARD', enriched.detail_level);
+check('enrichment preserves provenance', fast.shared.sourceRecords(enriched).length === 1);
+check('an unfetchable row leaves the queue instead of looping forever',
+  (await fast.api.storeTotals()).pendingDetail === 0);
+const unfetched = await fast.api.store('getRawByPlaceId', { place_id: '5000002' });
+check('a row that never got a card says so in the export',
+  unfetched.detail_level === 'LIST_ONLY' && unfetched.title === 'Без карточки', unfetched.detail_level);
+await fast.api.store('enrichRaw', { records: [{ key: enriched.key, fields: { phone: '', website: undefined, email: null } }] });
+const stillFull = await fast.api.store('getRawByPlaceId', { place_id: '5000001' });
+check('empty values from a thin card never erase what was already stored',
+  stillFull.phone === '+74951234567' && stillFull.website === 'https://example.ru/');
+check('enrichment reports what happened',
+  fast.api.getBatch().enrichStats.updated === 1 && fast.api.getBatch().enrichStats.failed === 1,
+  JSON.stringify(fast.api.getBatch().enrichStats));
+check('enrichment finished cleanly', fast.api.getBatch().enrichStatus === 'COMPLETED');
+await fast.api.enrichCards();
+check('re-running with nothing pending is a no-op', fast.api.getBatch().enrichStats.total === 0);
+
+// Filtering before enriching is the point: the expensive pass can then be
+// limited to the organisations that actually made it into the register.
+await fast.api.store('clearRaw');
+await fast.api.store('putRaw', {
+  records: [
+    { place_id: '6000001', title: 'Принят', maps_url: 'https://yandex.ru/maps/org/a/6000001/', detail_level: 'LIST' },
+    { place_id: '6000002', title: 'Отсеян', maps_url: 'https://yandex.ru/maps/org/b/6000002/', detail_level: 'LIST' },
+  ],
+  record: { district: 'Академический', group: 'Общепит', category: 'Ресторан', query: 'q1' },
+});
+await fast.api.store('putFinal', { records: [{ key: 'id:6000001', place_id: '6000001', final_status: 'ACCEPTED' }] });
+check('both rows are waiting for a card', (await fast.api.storeTotals()).pendingDetail === 2);
+const fetched = [];
+fast.setCardFetcher(async url => { fetched.push(url); return { phone: '+70000000000' }; });
+await fast.api.enrichCards('final');
+check('the FINAL-only pass fetches just the accepted organisation',
+  fetched.length === 1 && fetched[0].includes('6000001'), JSON.stringify(fetched));
+check('the rejected row is left untouched for later',
+  (await fast.api.storeTotals()).pendingDetail === 1);
+
+// Stopping has to take effect immediately and leave the rest resumable.
+await fast.api.store('putRaw', {
+  records: Array.from({ length: 5 }, (_, i) => ({ place_id: `700000${i}`, title: `R${i}`, maps_url: `https://yandex.ru/maps/org/x/700000${i}/`, detail_level: 'LIST' })),
+  record: { district: '', group: '', category: '', query: 'q2' },
+});
+const before = (await fast.api.storeTotals()).pendingDetail;
+fast.setCardFetcher(async () => { fast.api.stopEnrich(); return { phone: '+71111111111' }; });
+await fast.api.enrichCards('all');
+check('STOP ends the pass right away', fast.api.getBatch().enrichStatus === 'STOPPED');
+check('what was not enriched stays queued for the next run',
+  (await fast.api.storeTotals()).pendingDetail === before - 1,
+  `${(await fast.api.storeTotals()).pendingDetail} of ${before}`);
+
 // --- migration off chrome.storage -------------------------------------------
 section('migration of a v1.4.x dataset');
 const legacy = await loadExtension({ withStore: true });
