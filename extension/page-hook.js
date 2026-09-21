@@ -58,7 +58,11 @@
   // A Yandex search payload carrying ~40 organisations is around 60 KB. Map and
   // tile payloads are orders of magnitude larger, and parsing them repeatedly
   // over an hour-long run is what pushes the tab towards a renderer crash.
-  const MAX_TEXT_BYTES = 1024 * 1024;
+  // Raised back to 4 MB: 1 MB silently disabled the fast path on a live run -
+  // a wide search response is larger than a megabyte, and the run fell back to
+  // fetching a card per organisation. Parse cost is linear and modest; the deep
+  // walk was the expensive part, and MAX_NODES bounds that.
+  const MAX_TEXT_BYTES = 4 * 1024 * 1024;
   const collect = (value, out, seen, depth, budget) => {
     if (depth > MAX_DEPTH || !value || typeof value !== 'object') return;
     if (budget.left-- <= 0) return;

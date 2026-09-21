@@ -56,6 +56,7 @@
     fromList: 0,
     listSeen: 0,
     currentQueryId: null,
+    currentRecord: null,
     scrolledEver: false,
     maxScrollTop: 0,
     warning: null,
@@ -84,7 +85,7 @@
     filterError: null,
     filterStartedAt: null,
     filterCompletedAt: null,
-    filterStats: {processed:0,total:0,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,needsCard:0,incomplete:0,ambiguousDistrict:0,matchedSourceRecords:0,cardsQueued:0,cardsDone:0,cardsLoaded:0,cardsFailed:0},
+    filterStats: {processed:0,total:0,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,rejectedNoCriteria:0,needsCard:0,incomplete:0,ambiguousDistrict:0,matchedSourceRecords:0,cardsQueued:0,cardsDone:0,cardsLoaded:0,cardsFailed:0},
     pendingDetail: 0,
     pendingPriority: 0,
     geoInfo: null,
@@ -372,11 +373,16 @@
     if(!q)return base;
     const thin=item.detail_level!=='CARD';
 
+    // A record with no district cannot place the organisation anywhere, so it
+    // must never be what lets a row into the register. Accepting on such a
+    // record is how organisations outside ЮЗАО reached a district's FINAL.
+    if(!q.district)return {...base,accept:false,districtValidation:'NO_DISTRICT_IN_QUERY'};
+
     // District first. It is decided from coordinates, which every row has, so a
     // row in the wrong district is ruled out before its missing category could
     // send us fetching a card we would then throw away.
     let districtPart={districtValidation:'UNKNOWN',districtQuality:'NOT_CHECKED',detectedDistrict:'',districtCandidates:[]};
-    if(q.district&&Object.keys(DISTRICTS).some(d=>normalize(d)===normalize(q.district))){
+    if(Object.keys(DISTRICTS).some(d=>normalize(d)===normalize(q.district))){
       const geo=await detectGeoDistrict(item);
       if(!geo.valid)return {...base,accept:false,districtValidation:'NO_COORDINATES',districtQuality:'NO_COORDINATES',needsCard:thin};
       const requested=Object.keys(DISTRICTS).find(d=>normalize(d)===normalize(q.district));
@@ -552,7 +558,7 @@
       if(acceptedKeys.has(key)){stats.duplicateItems++;await patchAuto({duplicatesCount:state.duplicatesCount+1});continue;}
       // Durable before it is counted: the card is in IndexedDB the moment it is
       // read, so a crash costs at most the card in flight.
-      const totals=await store('putRaw',{records:[enriched],record:currentBatchQuery()||{district:'',group:'',category:'',query:state.currentSearchQuery}});
+      const totals=await store('putRaw',{records:[enriched],record:state.currentRecord||{district:'',group:'',category:'',query:state.currentSearchQuery}});
       stats.acceptedUnique++;acceptedKeys.add(key);
       await patchAuto({uniqueCount:acceptedKeys.size,lastProgressTime:Date.now()});
       if(batch.uniqueCount!==totals.rawUnique||batch.sourceHits!==totals.rawSourceHits){
@@ -686,7 +692,13 @@
     // Bound to the queue entry, not to the query string on the page: the string
     // can be a Yandex rewrite of what was asked for.
     state = {...blankAuto(),status:AUTO.RUNNING,startTime:Date.now(),lastProgressTime:Date.now(),
-      currentSearchQuery:queueItem?queueItem.query:getQuery(),currentQueryId:queueItem?.id||null};
+      currentSearchQuery:queueItem?queueItem.query:getQuery(),currentQueryId:queueItem?.id||null,
+      // Pinned once, when the run starts. Reading it back from the batch on
+      // every card meant a card collected while the batch was between states
+      // got an empty record - and an empty record has no district, which later
+      // let organisations from other okrugs into the register.
+      currentRecord:queueItem?{district:queueItem.district,group:queueItem.group,category:queueItem.category,query:queueItem.query}
+                              :{district:'',group:'',category:'',query:getQuery()}};
     await persistAuto(true); log('started',{query:state.currentSearchQuery}); ensureLoop();
   };
   const pauseAuto = async () => { if (state.status===AUTO.RUNNING) { await patchAuto({status:AUTO.PAUSED},true); log('paused'); } };
@@ -962,7 +974,10 @@
           const hasDistrictProblem=decisions.some(x=>!!x.record.district&&x.decision.districtValidation==='MISMATCH');
           // Undecidable only because the card has not been fetched yet.
           const undecided=decisions.some(x=>x.decision.needsCard)&&!hasDistrictProblem;
-          if(hasDistrictProblem)stats.rejectedDistrict++;
+          // Not a single record names a district, so the row cannot be placed.
+          const noCriteria=decisions.length>0&&decisions.every(x=>x.decision.districtValidation==='NO_DISTRICT_IN_QUERY');
+          if(noCriteria)stats.rejectedNoCriteria++;
+          else if(hasDistrictProblem)stats.rejectedDistrict++;
           else if(undecided){stats.needsCard++;forEnrich.push(item.key);}
           else if(hasNoCoords)stats.rejectedNoCoords++;
           else if(hasCategoryProblem)stats.rejectedCategory++;
@@ -1014,7 +1029,7 @@
     if(!totals.uniqueCount)throw new Error('RAW-реестр пуст. Сначала выполните BATCH.');
     if(batch.filterStatus==='RUNNING')return;
     filterStop=false;
-    const blank=()=>({processed:0,total:totals.uniqueCount,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,needsCard:0,incomplete:0,ambiguousDistrict:0,matchedSourceRecords:0,cardsQueued:0,cardsDone:0,cardsLoaded:0,cardsFailed:0});
+    const blank=()=>({processed:0,total:totals.uniqueCount,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,rejectedNoCriteria:0,needsCard:0,incomplete:0,ambiguousDistrict:0,matchedSourceRecords:0,cardsQueued:0,cardsDone:0,cardsLoaded:0,cardsFailed:0});
     let stats=blank();
     await patchBatch({filterStatus:'RUNNING',filterPhase:'FILTERING',filterError:null,filterStartedAt:Date.now(),filterCompletedAt:null,filterStats:stats,finalCount:0});
     blog('filter started',{rawUnique:stats.total});
@@ -1161,7 +1176,7 @@
         filter+=bar(cardPct)+`<div style="margin-top:4px">Карточек ${fs.cardsDone} / ${fs.cardsQueued} · загружено ${fs.cardsLoaded}, не удалось ${fs.cardsFailed}</div>`;
       }
       if(filterCompleted||filterError||batch.filterStatus==='STOPPED')filter+=`<div style="display:grid;grid-template-columns:1fr auto;gap:3px 10px;margin-top:6px">`+
-        `<span>RAW</span><b>${fs.total}</b><span>Принято в FINAL</span><b>${fs.accepted}</b><span>Отсеяно районом</span><b>${fs.rejectedDistrict}</b><span>Отсеяно категорией</span><b>${fs.rejectedCategory}</b><span>Без координат</span><b>${fs.rejectedNoCoords||0}</b><span>Неопределённо</span><b>${fs.rejectedUnknown}</b>`+
+        `<span>RAW</span><b>${fs.total}</b><span>Принято в FINAL</span><b>${fs.accepted}</b><span>Отсеяно районом</span><b>${fs.rejectedDistrict}</b><span>Отсеяно категорией</span><b>${fs.rejectedCategory}</b><span>Без координат</span><b>${fs.rejectedNoCoords||0}</b><span>Без района в запросе</span><b>${fs.rejectedNoCriteria||0}</b><span>Неопределённо</span><b>${fs.rejectedUnknown}</b>`+
         (fs.cardsDone?`<span>Догружено карточек</span><b>${fs.cardsLoaded} из ${fs.cardsQueued}</b>`:'')+
         (fs.ambiguousDistrict?`<span>Район определён неоднозначно</span><b>${fs.ambiguousDistrict}</b>`:'')+
       `</div>`;
@@ -1189,7 +1204,7 @@
       }
       if(!filterRunning)buttons+=btn(`RESET BATCH — УДАЛИТЬ RAW (${batch.uniqueCount})`,'batch-reset','color:#a16207');
     }
-    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.10.0</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
+    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.10.1</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
   };
 
   const render = () => {
@@ -1268,7 +1283,17 @@
     if(state.status===AUTO.RUNNING && state.currentSearchQuery && q && looseQuery(state.currentSearchQuery)!==looseQuery(q)){
       state.status=AUTO.STOPPED;state.error='Поисковый запрос изменился. Нажмите RESET перед новым сбором.';await persistAuto();
     }
-    if(state.status===AUTO.RUNNING)ensureLoop();
+    if(state.status===AUTO.RUNNING){
+      // A crash can leave AUTO marked RUNNING while the batch is not. Resuming
+      // the loop there keeps collecting outside any query of the queue, which
+      // is how rows without a district got into the registry.
+      if(batch.queue.length&&![BATCH.RUNNING,BATCH.USER_ACTION_REQUIRED].includes(batch.status)){
+        state.status=AUTO.STOPPED;
+        state.error='Сбор остановлен вместе с BATCH.';
+        await persistAuto();
+        blog('auto stopped: batch is not running',{batchStatus:batch.status});
+      }else ensureLoop();
+    }
   };
 
   const mount=()=>{render();if(!getPanel())setTimeout(mount,400);};

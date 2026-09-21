@@ -157,10 +157,18 @@ check('matching org is accepted with real validations', (await api.evaluateItem(
 check('org without coordinates is NO_COORDINATES, not a district mismatch',
   (await api.evaluateItem({ latitude: '', longitude: '', categories: 'Ресторан' },
     { district: 'Академический', group: 'Общепит', category: 'Ресторан', query: 'q' })).districtValidation === 'NO_COORDINATES');
+// A record with no district cannot place an organisation, so it must not be
+// what lets one into a district register. A real run collected rows outside
+// ЮЗАО under such a record and they were accepted into Гагаринский.
 const free = await api.evaluateItem({ latitude: 55.6875, longitude: 37.5730, categories: 'Ресторан' },
   { district: '', group: '', category: '', query: 'свободный запрос' });
-check('a query without district/category yields UNKNOWN, never a fake MATCH',
-  free.accept && free.categoryValidation === 'UNKNOWN' && free.districtValidation === 'UNKNOWN');
+check('a record with no district never admits an organisation',
+  !free.accept && free.districtValidation === 'NO_DISTRICT_IN_QUERY', JSON.stringify(free));
+const outsideOkrug = await api.evaluateItem(
+  { latitude: 55.661689, longitude: 37.481469, categories: 'Кальян-бар, ресторан, бар' },
+  { district: '', group: '', category: '', query: 'кафе Гагаринский район Москва' });
+check('an organisation outside ЮЗАО is not let in through an empty record',
+  !outsideOkrug.accept, JSON.stringify(outsideOkrug));
 check('unknown category stays UNKNOWN', api.categoryMatch('Ночной клуб', 'Ресторан') === null);
 
 // The eleven query categories are a way of finding organisations, not a
