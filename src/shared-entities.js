@@ -51,31 +51,38 @@
     && Number.isFinite(value.coordinates[0]) && Number.isFinite(value.coordinates[1]);
 
   const MAX_DEPTH = 24;
-  const collect = (value, out, seen, depth) => {
+  // Yandex Maps also fetches map data, which can be tens of megabytes of deeply
+  // nested arrays. Walking that on the main thread is what freezes the tab, so
+  // the walk is bounded and simply gives up on anything that large.
+  const MAX_NODES = 200000;
+  const MAX_TEXT_BYTES = 4 * 1024 * 1024;
+  const collect = (value, out, seen, depth, budget) => {
     if (depth > MAX_DEPTH || !value || typeof value !== 'object') return;
+    if (budget.left-- <= 0) return;
     if (seen.has(value)) return;
     seen.add(value);
-    if (Array.isArray(value)) { for (const v of value) collect(v, out, seen, depth + 1); return; }
+    if (Array.isArray(value)) { for (const v of value) collect(v, out, seen, depth + 1, budget); return; }
     if (looksLikeOrg(value)) {
       const item = asItem(value);
       if (item && !out.has(item.place_id)) out.set(item.place_id, item);
       // Keep walking: an entity can carry nested ones (chains, branches).
     }
-    for (const v of Object.values(value)) collect(v, out, seen, depth + 1);
+    for (const v of Object.values(value)) collect(v, out, seen, depth + 1, budget);
   };
 
   const fromJson = json => {
     const out = new Map();
-    try { collect(json, out, new WeakSet(), 0); } catch { /* malformed payload: fall back */ }
+    try { collect(json, out, new WeakSet(), 0, { left: MAX_NODES }); } catch { /* malformed payload: fall back */ }
     return [...out.values()];
   };
 
   const fromText = text => {
-    if (typeof text !== 'string' || text.length < 32) return [];
-    // Cheap reject before paying for a parse of a large response.
+    if (typeof text !== 'string' || text.length < 32 || text.length > MAX_TEXT_BYTES) return [];
+    // Cheap rejects before paying for a parse. A search payload names its
+    // organisations; map data does not.
     if (!text.includes('"coordinates"') || !text.includes('"title"')) return [];
     try { return fromJson(JSON.parse(text)); } catch { return []; }
   };
 
-  globalThis.GLSEntities = { fromJson, fromText, asItem, looksLikeOrg };
+  globalThis.GLSEntities = { fromJson, fromText, asItem, looksLikeOrg, MAX_TEXT_BYTES };
 })();

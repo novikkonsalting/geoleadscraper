@@ -33,6 +33,10 @@
           try {
             const type = response.headers?.get?.('content-type') || '';
             if (!/json|javascript|text/i.test(type)) return;
+            // Skip anything too big to be a result list. Cloning and reading a
+            // multi-megabyte map payload is what made long runs exhaust memory.
+            const length = Number(response.headers?.get?.('content-length') || 0);
+            if (length > globalThis.GLSEntities.MAX_TEXT_BYTES) return;
             // clone() so the page still reads the body itself.
             response.clone().text().then(harvest, () => {});
           } catch { /* ignore */ }

@@ -313,6 +313,60 @@ check('what was not topped up stays queued for the next run',
   (await fast.api.storeTotals()).pendingPriority === 4,
   `${(await fast.api.storeTotals()).pendingPriority}`);
 
+// --- a query Yandex rewrites must not turn into a reload loop ----------------
+section('batch navigation');
+{
+  const nav = await loadExtension({ withStore: true });
+  await nav.api.store('clearRaw');
+  await nav.api.loadRawText('place_id,title,latitude,longitude\r\n"1","x","55.6","37.5"', 'seed.csv').catch(() => {});
+  await nav.api.loadBatchText('district;group;category;query\nАкадемический;Общепит;Фастфуд;фастфуд Академический район Москва\n', 'q.csv');
+
+  // Yandex reformats "фастфуд" into "фаст фуд" and changes the URL. This is the
+  // exact rewrite that sent a real run into an endless reload.
+  globalThis.__rewriteQuery = url => url.replace(encodeURIComponent('фастфуд'), encodeURIComponent('фаст фуд'));
+  check('the rewrite is recognised as the same search',
+    nav.api.looseQuery('фастфуд Академический район Москва') === nav.api.looseQuery('фаст фуд Академический район Москва'));
+
+  await nav.api.startBatch();
+  for (let i = 0; i < 12; i++) await nav.api.runBatchCurrent();
+  const navigations = globalThis.location.navigations.length;
+  check('navigation stops instead of looping forever', navigations <= 3, `${navigations} navigations`);
+  check('the run continues on the page Yandex actually showed',
+    nav.api.getState().status === 'RUNNING' || nav.api.getState().currentQueryId !== null,
+    JSON.stringify({ status: nav.api.getState().status, id: nav.api.getState().currentQueryId }));
+  check('AUTO is bound to the queue entry, not to the rewritten string',
+    nav.api.getState().currentQueryId === nav.api.getBatch().queue[0].id,
+    `${nav.api.getState().currentQueryId} vs ${nav.api.getBatch().queue[0].id}`);
+  check('provenance keeps the query that was asked for',
+    nav.api.getState().currentSearchQuery === 'фастфуд Академический район Москва',
+    nav.api.getState().currentSearchQuery);
+  check('the page Yandex substituted is recorded on the queue entry',
+    nav.api.getBatch().queue[0].actualQuery === 'фаст фуд Академический район Москва',
+    JSON.stringify(nav.api.getBatch().queue[0].actualQuery));
+  globalThis.location.navigations.length = 0;
+  globalThis.__rewriteQuery = null;
+}
+
+{
+  // The harder case: Yandex substitutes something that is not just a
+  // reformatting. Navigation must give up after a couple of tries rather than
+  // reloading the page for ever.
+  const nav = await loadExtension({ withStore: true });
+  await nav.api.store('clearRaw');
+  await nav.api.loadBatchText('district;group;category;query\nЯсенево;Общепит;Столовая;столовые Ясенево Москва\n', 'q.csv');
+  globalThis.__rewriteQuery = () => 'https://yandex.ru/maps/213/moscow/search/' + encodeURIComponent('нечто совсем другое') + '/';
+  await nav.api.startBatch();
+  for (let i = 0; i < 12; i++) await nav.api.runBatchCurrent();
+  const tries = globalThis.location.navigations.length;
+  check('a substituted query is retried a couple of times, then let go',
+    tries >= 2 && tries <= 3, `${tries} navigations`);
+  check('and the batch keeps going instead of hanging',
+    nav.api.getState().currentQueryId === nav.api.getBatch().queue[0].id,
+    JSON.stringify({ id: nav.api.getState().currentQueryId }));
+  globalThis.location.navigations.length = 0;
+  globalThis.__rewriteQuery = null;
+}
+
 // --- migration off chrome.storage -------------------------------------------
 section('migration of a v1.4.x dataset');
 const legacy = await loadExtension({ withStore: true });

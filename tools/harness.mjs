@@ -39,7 +39,16 @@ export async function loadExtension({ withStore = false } = {}) {
   globalThis.location = {
     hostname: 'yandex.ru', pathname: '/maps/213/moscow/search/test/',
     href: 'https://yandex.ru/maps/213/moscow/search/test/', origin: 'https://yandex.ru',
-    search: '', assign() {},
+    search: '', searchParams: new URLSearchParams(),
+    // Records navigations and lets a test emulate what Yandex actually does to
+    // the URL, including rewriting the query.
+    navigations: [],
+    assign(url) {
+      this.navigations.push(url);
+      const rewritten = globalThis.__rewriteQuery ? globalThis.__rewriteQuery(url) : url;
+      const u = new URL(rewritten);
+      this.href = rewritten; this.pathname = u.pathname; this.search = u.search;
+    },
   };
   const windowListeners = {};
   globalThis.window = {
@@ -86,6 +95,8 @@ export async function loadExtension({ withStore = false } = {}) {
       placeIdFromUrl, ensureGeo, evaluateItem, store, storeTotals, eachStored,
       loadRawText, filterBatch, resetBatch, restore, migrateLegacyDataset,
       stopFilter, needsCardData, seedFromDocument, rememberEntities,
+      runBatchCurrent, startBatch, loadBatchText, looseQuery,
+      setBatch: b => { batch = { ...batch, ...b }; },
       setGeoCache: c => { geoCache = c; },
       buildGeoCache, embeddedGeo,
       getListEntities: () => listEntities,

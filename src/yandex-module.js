@@ -31,6 +31,10 @@
     STAGNANT_REQUIRED: 2,
     BATCH_PAGE_SETTLE_MS: 1250,
     LOW_YIELD_UNIQUE: 15,
+    // Yandex rewrites some queries ("фастфуд" becomes "фаст фуд"). Retrying
+    // navigation forever because the page shows a different string is how a
+    // batch turns into an endless reload loop.
+    MAX_NAV_ATTEMPTS: 2,
   };
 
   const blankAuto = () => ({
@@ -51,6 +55,7 @@
     reusedFromBatchCache: 0,
     fromList: 0,
     listSeen: 0,
+    currentQueryId: null,
     scrolledEver: false,
     maxScrollTop: 0,
     warning: null,
@@ -66,6 +71,7 @@
     currentIndex: 0,
     completedQueries: 0,
     failedQueries: 0,
+    navAttempts: 0,
     uniqueCount: 0,
     sourceHits: 0,
     startTime: null,
@@ -103,6 +109,10 @@
   // Keying, merging and dedupe live in src/shared-record.js so that the content
   // script and the storage service worker can never disagree about them.
   const {normalize, stableKey, sourceRecords, uniqueJoined} = globalThis.GLSRecord;
+  // Compares what was asked for against what the page ended up showing. Yandex
+  // reformats queries - spacing, punctuation, ё - and those rewrites mean the
+  // same search, so they must not count as "wrong page".
+  const looseQuery = v => normalize(v).replace(/[^\p{L}\p{N}]+/gu, '');
 
   // Client for the IndexedDB dataset owned by the service worker. The dataset
   // no longer rides inside the chrome.storage snapshot, so a write costs one
@@ -126,7 +136,9 @@
   // sends the collector back to the per-card fetch, which is what every build
   // before this one did for every single card.
   const listEntities = new Map();
-  const LIST_ENTITY_LIMIT = 20000;
+  // One query's result list, nothing more: the page reloads between queries, so
+  // this never has to hold a whole batch.
+  const LIST_ENTITY_LIMIT = 5000;
   const rememberEntities = items => {
     let added = 0;
     for (const item of items || []) {
@@ -647,13 +659,16 @@
     }).finally(() => { loopPromise = null; });
   };
 
-  const startAuto = async () => {
+  const startAuto = async (queueItem=null) => {
     runToken++;
     injectPageHook();
     const seeded=seedFromDocument();
     if(seeded)log('seeded from page state-view',{entities:seeded});
     seenUrls.clear(); seenPlaceIds.clear(); acceptedKeys.clear();
-    state = {...blankAuto(),status:AUTO.RUNNING,startTime:Date.now(),lastProgressTime:Date.now(),currentSearchQuery:getQuery()};
+    // Bound to the queue entry, not to the query string on the page: the string
+    // can be a Yandex rewrite of what was asked for.
+    state = {...blankAuto(),status:AUTO.RUNNING,startTime:Date.now(),lastProgressTime:Date.now(),
+      currentSearchQuery:queueItem?queueItem.query:getQuery(),currentQueryId:queueItem?.id||null};
     await persistAuto(true); log('started',{query:state.currentSearchQuery}); ensureLoop();
   };
   const pauseAuto = async () => { if (state.status===AUTO.RUNNING) { await patchAuto({status:AUTO.PAUSED},true); log('paused'); } };
@@ -815,22 +830,42 @@
       if(current.status!=='RUNNING'){
         const q=[...batch.queue];q[batch.currentIndex]={...current,status:'RUNNING',error:null};await patchBatch({queue:q});
       }
-      if(normalize(getQuery())!==normalize(current.query)){
-        blog('navigate',{index:batch.currentIndex+1,query:current.query}); location.assign(buildSearchUrl(current.query)); return;
+      const pageQuery=getQuery();
+      const boundToThis=state.currentQueryId===current.id;
+      if(looseQuery(pageQuery)!==looseQuery(current.query) && !boundToThis){
+        const attempts=batch.navAttempts||0;
+        if(attempts<CFG.MAX_NAV_ATTEMPTS){
+          await patchBatch({navAttempts:attempts+1});
+          blog('navigate',{index:batch.currentIndex+1,query:current.query,attempt:attempts+1});
+          location.assign(buildSearchUrl(current.query));
+          return;
+        }
+        // Yandex is showing its own rewrite of the query. It is the same search,
+        // so take the page as it is instead of navigating again forever.
+        blog('query rewritten by Yandex, taking the page as is',{wanted:current.query,page:pageQuery});
+        const q=[...batch.queue];q[batch.currentIndex]={...current,actualQuery:pageQuery};
+        await patchBatch({queue:q});
       }
       await sleep(CFG.BATCH_PAGE_SETTLE_MS); if(batch.status!==BATCH.RUNNING)return;
-      const same=normalize(state.currentSearchQuery)===normalize(current.query);
+      const same=state.currentQueryId===current.id;
       if(same&&state.status===AUTO.RUNNING)return;
       if(same&&[AUTO.PAUSED,AUTO.USER_ACTION_REQUIRED].includes(state.status)){await resumeAuto();return;}
       if(same&&state.status===AUTO.COMPLETED){batchAdvancing=false;await finishBatchCurrent();return;}
-      await resetAuto();await startAuto();
+      // Record what Yandex actually put on the page when it differs from what
+      // was asked for, so the run is auditable afterwards.
+      const shown=getQuery();
+      if(normalize(shown)!==normalize(current.query)&&batch.queue[batch.currentIndex]?.actualQuery!==shown){
+        const q=[...batch.queue];q[batch.currentIndex]={...q[batch.currentIndex],actualQuery:shown};
+        await patchBatch({queue:q});
+      }
+      await resetAuto();await startAuto(current);
     }catch(e){await batchFatal(e);}finally{batchAdvancing=false;}
   };
 
   const finishBatchCurrent = async () => {
     if(batchAdvancing || batch.status!==BATCH.RUNNING) return;
     const current=batch.queue[batch.currentIndex]; if(!current||current.status==='COMPLETED')return;
-    if(normalize(state.currentSearchQuery)!==normalize(current.query)||state.status!==AUTO.COMPLETED)return;
+    if(state.currentQueryId!==current.id||state.status!==AUTO.COMPLETED)return;
     batchAdvancing=true;
     try{
       const totals=await storeTotals(), q=[...batch.queue];
@@ -838,7 +873,7 @@
       q[batch.currentIndex]={...current,status:queryWarning?'COMPLETED_LOW':'COMPLETED',uniqueFound:state.uniqueCount,error:null,warning:queryWarning};
       const warnings=queryWarning?[...(batch.warnings||[]),{query:current.query,unique:state.uniqueCount,message:queryWarning}]:(batch.warnings||[]);
       const next=batch.currentIndex+1, completed=batch.completedQueries+1;if(next<q.length)q[next]={...q[next],status:'RUNNING',error:null};
-      batch={...batch,queue:q,warnings,...totals,completedQueries:completed,currentIndex:next,lastProgressTime:Date.now(),error:null,status:next>=q.length?BATCH.COMPLETED:BATCH.RUNNING,filterStatus:'IDLE',filterPhase:'IDLE',filterError:null,filterStartedAt:null,filterCompletedAt:null,filterStats:blankBatch().filterStats};
+      batch={...batch,queue:q,warnings,...totals,completedQueries:completed,currentIndex:next,navAttempts:0,lastProgressTime:Date.now(),error:null,status:next>=q.length?BATCH.COMPLETED:BATCH.RUNNING,filterStatus:'IDLE',filterPhase:'IDLE',filterError:null,filterStartedAt:null,filterCompletedAt:null,filterStats:blankBatch().filterStats};
       await persistBatch();blog('query completed',{index:next,query:current.query,queryRawUnique:state.uniqueCount,totalRawUnique:totals.uniqueCount});
       if(next>=q.length){blog('completed',{queries:completed,unique:totals.uniqueCount});return;}
       await resetAuto();const n=q[next];blog('next query',{index:next+1,query:n.query});location.assign(buildSearchUrl(n.query));
@@ -849,7 +884,7 @@
     if(!batch.queue.length)throw new Error('Сначала загрузите CSV со списком запросов.');
     await resetAuto();
     const q=batch.queue.map((x,i)=>({...x,status:i===0?'RUNNING':'PENDING',uniqueFound:0,error:null}));
-    batch={...blankBatch(),status:BATCH.RUNNING,fileName:batch.fileName,queue:q,startTime:Date.now(),lastProgressTime:Date.now()};await persistBatch();blog('started',{queries:q.length,mode:'RAW_FIRST'});await runBatchCurrent();
+    batch={...blankBatch(),status:BATCH.RUNNING,fileName:batch.fileName,queue:q,startTime:Date.now(),lastProgressTime:Date.now(),navAttempts:0};await persistBatch();blog('started',{queries:q.length,mode:'RAW_FIRST'});await runBatchCurrent();
   };
   const pauseBatch = async () => {if(batch.status!==BATCH.RUNNING)return;await patchBatch({status:BATCH.PAUSED});await pauseAuto();blog('paused',{currentIndex:batch.currentIndex});};
   const resumeBatch = async () => {if(![BATCH.PAUSED,BATCH.USER_ACTION_REQUIRED].includes(batch.status))return;await patchBatch({status:BATCH.RUNNING,error:null});blog('resumed',{currentIndex:batch.currentIndex});await runBatchCurrent();};
@@ -1135,7 +1170,7 @@
       }
       if(!filterRunning)buttons+=btn(`RESET BATCH — УДАЛИТЬ RAW (${batch.uniqueCount})`,'batch-reset','color:#a16207');
     }
-    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.9.1</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
+    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.9.2</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
   };
 
   const render = () => {
@@ -1211,7 +1246,7 @@
     }
 
     const q=getQuery();
-    if(state.status===AUTO.RUNNING && state.currentSearchQuery && q && normalize(state.currentSearchQuery)!==normalize(q)){
+    if(state.status===AUTO.RUNNING && state.currentSearchQuery && q && looseQuery(state.currentSearchQuery)!==looseQuery(q)){
       state.status=AUTO.STOPPED;state.error='Поисковый запрос изменился. Нажмите RESET перед новым сбором.';await persistAuto();
     }
     if(state.status===AUTO.RUNNING)ensureLoop();

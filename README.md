@@ -1,4 +1,4 @@
-# GeoLeadScraper — Yandex Maps AUTO + BATCH (v1.9.1)
+# GeoLeadScraper — Yandex Maps AUTO + BATCH (v1.9.2)
 
 Сбор справочника организаций ЮЗАО Москвы по схеме **COLLECT RAW → LOCAL FILTER → FINAL**.
 
@@ -26,6 +26,7 @@ Google Maps и 2GIS части проекта не затрагиваются: �
 | `tools/embed-boundaries.mjs` | Генерирует встроенные границы из `data/uzao_districts.geojson`. |
 | `tools/fix-swapped-coords.mjs` | Чинит перевёрнутые latitude/longitude в уже выгруженном CSV. |
 | `data/uzao_districts.geojson` | Границы 12 районов ЮЗАО из OpenStreetMap (ODbL). |
+| `data/queries/` | Те же 132 запроса, разложенные по 11 на район. |
 | `tools/geo-check.mjs` | Контроль качества границ: regression probes, 16 контрольных точек, перекрытия, площади. |
 | `tools/analyze-raw.mjs` | Аудит RAW/FINAL CSV + прогон локального фильтра без Chrome. |
 
@@ -62,8 +63,11 @@ node tools/browser-check.mjs      # перехватчик ответов в н�
 
 ## Порядок работы в Chrome
 
-1. Открыть Яндекс Карты, загрузить `uzao_yandex_optimized_132.csv` кнопкой
-   **ЗАГРУЗИТЬ CSV СО СПИСКОМ ЗАПРОСОВ**.
+1. Открыть Яндекс Карты, загрузить CSV с запросами кнопкой
+   **ЗАГРУЗИТЬ CSV СО СПИСКОМ ЗАПРОСОВ**. Для полного ЮЗАО лучше брать файлы из
+   `data/queries/` по одному району за раз: 132 запроса в одной вкладке — это
+   10–20 часов, а RAW накапливается в хранилище между запусками, поэтому
+   результат получается тот же.
 2. **START RAW BATCH** — сбор идёт без гео- и категорийной фильтрации.
 3. **EXPORT RAW** сразу после завершения. Файл называется `RAW_ALL`, если сбор
    прошёл полностью, и `RAW_PARTIAL`, если хотя бы один запрос завершился
