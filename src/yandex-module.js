@@ -78,9 +78,7 @@
     filterError: null,
     filterStartedAt: null,
     filterCompletedAt: null,
-    filterStats: {processed:0,total:0,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,needsCard:0,ambiguousDistrict:0,matchedSourceRecords:0},
-    enrichStatus: 'IDLE',
-    enrichStats: {processed:0,updated:0,failed:0,total:0},
+    filterStats: {processed:0,total:0,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,needsCard:0,incomplete:0,ambiguousDistrict:0,matchedSourceRecords:0,cardsQueued:0,cardsDone:0,cardsLoaded:0,cardsFailed:0},
     pendingDetail: 0,
     pendingPriority: 0,
     geoInfo: null,
@@ -667,64 +665,7 @@
     return {uniqueCount:t.rawUnique,sourceHits:t.rawSourceHits,finalCount:t.finalCount,pendingDetail:t.pendingDetail||0,pendingPriority:t.pendingPriority||0};
   };
 
-  // Second pass over the registry: fetches the org card only for rows that were
-  // read from the page's list data and are still missing card-only fields.
-  //
-  // Separate from collection on purpose. Collection is now cheap, so the
-  // expensive part is isolated where it can be stopped, resumed and re-run
-  // without touching Yandex's result lists again. Progress lives in the store,
-  // so a row leaves the queue the moment it is enriched.
-  let enrichStop=false;
-  const enrichCards = async (scope='all') => {
-    const parser=window.__glsYandexFetch;
-    if(typeof parser!=='function')throw new Error('Yandex extractor недоступен в этой сборке.');
-    if(batch.enrichStatus==='RUNNING')return;
-    enrichStop=false;
-    const op=scope==='final'?'listPendingDetailFinal':'listPendingDetail';
-    const totals=await storeTotals();
-    // For the FINAL-only pass the size is not known up front: counting it on
-    // every render would mean scanning the final register on the hot path.
-    const first=await store(op,{limit:100});
-    const stats={processed:0,updated:0,failed:0,total:scope==='final'?first.length:totals.pendingDetail,scope};
-    if(!first.length){await patchBatch({enrichStatus:'IDLE',enrichStats:stats,...totals});return;}
-    await patchBatch({enrichStatus:'RUNNING',enrichStats:stats,error:null});
-    blog('enrich started',{scope,pending:stats.total});
-    try{
-      let pending=first;
-      while(!enrichStop){
-        if(!pending.length)break;
-        for(const row of pending){
-          if(enrichStop)break;
-          const url=row.maps_url;
-          let card=null;
-          if(url){try{card=await parser(url,{extractWebsites:false});}catch{card=null;}}
-          if(card){
-            await store('enrichRaw',{records:[{key:row.key,fields:card}]});
-            stats.updated++;
-          }else{
-            // Leaves the queue either way - a row that cannot be fetched must
-            // not make the pass loop over it forever - but keeps its own mark,
-            // so the export says which rows never got a card. The collected
-            // data itself is untouched.
-            await store('enrichRaw',{records:[{key:row.key,fields:{},detailLevel:'LIST_ONLY'}]});
-            stats.failed++;
-          }
-          stats.processed++;
-          if(stats.processed%10===0)await patchBatch({enrichStats:{...stats}});
-          if(!enrichStop&&CFG.CARD_DELAY_MS>0)await sleep(CFG.CARD_DELAY_MS+Math.floor(Math.random()*180));
-        }
-        if(enrichStop)break;
-        pending=await store(op,{limit:100});
-        if(scope==='final')stats.total=stats.processed+pending.length;
-      }
-      await patchBatch({enrichStatus:enrichStop?'STOPPED':'COMPLETED',enrichStats:{...stats},...await storeTotals()});
-      blog('enrich finished',{...stats,stopped:enrichStop});
-    }catch(e){
-      await patchBatch({enrichStatus:'ERROR',enrichStats:{...stats},error:e?.message||String(e)});
-      blog('enrich error',e?.message||e);
-    }
-  };
-  const stopEnrich = () => { enrichStop=true; };
+  let filterStop=false;
 
   const csvCell = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
   const csvRows = (rows,fields) => rows.map(row => fields.map(f => csvCell(row[f])).join(',')).join('\r\n');
@@ -928,69 +869,124 @@
     render();blog('reset');
   };
 
+  // Card-only fields. A row read from the result list that has all of them
+  // needs no card fetch at all - on real exports that is most of them.
+  const CARD_FIELDS=['categories','phone','website','opening_hours'];
+  const needsCardData = item => item.detail_level==='LIST' && CARD_FIELDS.some(f=>!String(item[f]||'').trim());
+
+  const runFilterPass = async stats => {
+    await store('clearFinal');
+    await eachStored('listRaw', async rows => {
+      if(filterStop)return;
+      const accepted=[],forEnrich=[];
+      for(const item of rows){
+        const records=sourceRecords(item),decisions=[];
+        for(const record of records)decisions.push({record,decision:await evaluateItem(item,record)});
+        const ok=decisions.filter(x=>x.decision.accept);
+        if(ok.length){
+          const uniqueAccepted=[...new Map(ok.map(x=>[JSON.stringify(x.record),x])).values()];
+          const matched=uniqueAccepted.map(x=>x.record);
+          const detected=uniqueJoined(uniqueAccepted.map(x=>x.decision.detectedDistrict||'').filter(Boolean));
+          // Report the validations that were actually computed. A record with
+          // no category or no district in the query is UNKNOWN, not MATCH:
+          // search metadata and verified metadata must stay separate.
+          const categoryValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.categoryValidation))||'UNKNOWN';
+          const districtValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtValidation))||'UNKNOWN';
+          const districtQuality=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtQuality))||'NOT_CHECKED';
+          const candidates=uniqueJoined(uniqueAccepted.flatMap(x=>x.decision.districtCandidates||[]));
+          const ambiguous=uniqueAccepted.some(x=>x.decision.districtQuality==='AMBIGUOUS');
+          if(ambiguous)stats.ambiguousDistrict++;
+          accepted.push({...item,category_validation:categoryValidation,district_validation:districtValidation,district_quality:districtQuality,district_candidates:ambiguous?candidates:'',detected_district:detected,matched_source_district:uniqueJoined(matched.map(x=>x.district)),matched_source_group:uniqueJoined(matched.map(x=>x.group)),matched_source_category:uniqueJoined(matched.map(x=>x.category)),matched_source_query:uniqueJoined(matched.map(x=>x.query)),matched_source_records:JSON.stringify(matched),matched_source_queries_count:matched.length,final_status:'ACCEPTED',exclude_reason:''});
+          stats.accepted++;stats.matchedSourceRecords+=matched.length;
+          // Accepted but incomplete: it belongs in the register now, and the
+          // missing contact fields are worth one card fetch.
+          if(needsCardData(item)){stats.incomplete++;forEnrich.push(item.key);}
+        }else{
+          const hasCategoryProblem=decisions.some(x=>!!x.record.category&&x.decision.categoryValidation!=='MATCH');
+          const hasNoCoords=decisions.some(x=>x.decision.districtValidation==='NO_COORDINATES');
+          const hasDistrictProblem=decisions.some(x=>!!x.record.district&&x.decision.districtValidation==='MISMATCH');
+          // Undecidable only because the card has not been fetched yet.
+          const undecided=decisions.some(x=>x.decision.needsCard)&&!hasDistrictProblem;
+          if(hasDistrictProblem)stats.rejectedDistrict++;
+          else if(undecided){stats.needsCard++;forEnrich.push(item.key);}
+          else if(hasNoCoords)stats.rejectedNoCoords++;
+          else if(hasCategoryProblem)stats.rejectedCategory++;
+          else stats.rejectedUnknown++;
+        }
+        stats.processed++;
+      }
+      if(forEnrich.length)await store('flagForEnrich',{keys:forEnrich});
+      const written=accepted.length?await store('putFinal',{records:accepted}):null;
+      await patchBatch({filterStats:{...stats},finalCount:written?written.finalCount:batch.finalCount});
+      await sleep(0);
+    });
+  };
+
+  // Fetches the org card for the rows the pass flagged, and only those. This is
+  // the one part of filtering that touches Yandex, so it is paced and can be
+  // stopped; the queue lives in the store behind an index, so stopping loses
+  // nothing and the next run picks up where this one left off.
+  const runCardPass = async stats => {
+    const parser=window.__glsYandexFetch;
+    if(typeof parser!=='function')return;
+    for(;;){
+      if(filterStop)return;
+      const pending=await store('listPendingDetailFinal',{limit:100});
+      if(!pending.length)return;
+      for(const row of pending){
+        if(filterStop)return;
+        let card=null;
+        if(row.maps_url){try{card=await parser(row.maps_url,{extractWebsites:false});}catch{card=null;}}
+        if(card){await store('enrichRaw',{records:[{key:row.key,fields:card}]});stats.cardsLoaded++;}
+        else{await store('enrichRaw',{records:[{key:row.key,fields:{},detailLevel:'LIST_ONLY'}]});stats.cardsFailed++;}
+        stats.cardsDone++;
+        if(stats.cardsDone%5===0)await patchBatch({filterStats:{...stats}});
+        if(!filterStop&&CFG.CARD_DELAY_MS>0)await sleep(CFG.CARD_DELAY_MS+Math.floor(Math.random()*180));
+      }
+    }
+  };
+
   const filterBatch = async () => {
     const totals=await storeTotals();
     if(!totals.uniqueCount)throw new Error('RAW-реестр пуст. Сначала выполните BATCH.');
     if(batch.filterStatus==='RUNNING')return;
-    const stats={processed:0,total:totals.uniqueCount,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,needsCard:0,ambiguousDistrict:0,matchedSourceRecords:0};
-    await patchBatch({filterStatus:'RUNNING',filterPhase:'LOADING_GEO',filterError:null,filterStartedAt:Date.now(),filterCompletedAt:null,filterStats:stats,finalCount:0});
+    filterStop=false;
+    const blank=()=>({processed:0,total:totals.uniqueCount,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,needsCard:0,incomplete:0,ambiguousDistrict:0,matchedSourceRecords:0,cardsQueued:0,cardsDone:0,cardsLoaded:0,cardsFailed:0});
+    let stats=blank();
+    await patchBatch({filterStatus:'RUNNING',filterPhase:'FILTERING',filterError:null,filterStartedAt:Date.now(),filterCompletedAt:null,filterStats:stats,finalCount:0});
     blog('filter started',{rawUnique:stats.total});
     try{
       const geo=await ensureGeo();
-      await store('clearFinal');
-      await patchBatch({filterPhase:'FILTERING',geoInfo:{source:geo.source,quality:geo.quality||null}});
-      // Streams RAW page by page and writes FINAL page by page. Neither the
-      // input nor the output registry is ever held whole in memory.
-      await eachStored('listRaw', async rows => {
-        const accepted=[],forEnrich=[];
-        for(const item of rows){
-          const records=sourceRecords(item),decisions=[];
-          for(const record of records)decisions.push({record,decision:await evaluateItem(item,record)});
-          const ok=decisions.filter(x=>x.decision.accept);
-          if(ok.length){
-            const uniqueAccepted=[...new Map(ok.map(x=>[JSON.stringify(x.record),x])).values()];
-            const matched=uniqueAccepted.map(x=>x.record);
-            const detected=uniqueJoined(uniqueAccepted.map(x=>x.decision.detectedDistrict||'').filter(Boolean));
-            // Report the validations that were actually computed. A record with
-            // no category or no district in the query is UNKNOWN, not MATCH:
-            // search metadata and verified metadata must stay separate.
-            const categoryValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.categoryValidation))||'UNKNOWN';
-            const districtValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtValidation))||'UNKNOWN';
-            const districtQuality=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtQuality))||'NOT_CHECKED';
-            const candidates=uniqueJoined(uniqueAccepted.flatMap(x=>x.decision.districtCandidates||[]));
-            const ambiguous=uniqueAccepted.some(x=>x.decision.districtQuality==='AMBIGUOUS');
-            if(ambiguous)stats.ambiguousDistrict++;
-            accepted.push({...item,category_validation:categoryValidation,district_validation:districtValidation,district_quality:districtQuality,district_candidates:ambiguous?candidates:'',detected_district:detected,matched_source_district:uniqueJoined(matched.map(x=>x.district)),matched_source_group:uniqueJoined(matched.map(x=>x.group)),matched_source_category:uniqueJoined(matched.map(x=>x.category)),matched_source_query:uniqueJoined(matched.map(x=>x.query)),matched_source_records:JSON.stringify(matched),matched_source_queries_count:matched.length,final_status:'ACCEPTED',exclude_reason:''});
-            stats.accepted++;stats.matchedSourceRecords+=matched.length;
-            if(item.detail_level==='LIST')forEnrich.push(item.key);
-          }else{
-            const hasCategoryProblem=decisions.some(x=>!!x.record.category&&x.decision.categoryValidation!=='MATCH');
-            const hasNoCoords=decisions.some(x=>x.decision.districtValidation==='NO_COORDINATES');
-            const hasDistrictProblem=decisions.some(x=>!!x.record.district&&x.decision.districtValidation==='MISMATCH');
-            // Undecidable only because the card has not been fetched yet: keep
-            // it out of the rejection counts and queue it for the card pass.
-            const undecided=decisions.some(x=>x.decision.needsCard)&&!hasDistrictProblem;
-            if(hasDistrictProblem)stats.rejectedDistrict++;
-            else if(undecided){stats.needsCard++;forEnrich.push(item.key);}
-            else if(hasNoCoords)stats.rejectedNoCoords++;
-            else if(hasCategoryProblem)stats.rejectedCategory++;
-            else stats.rejectedUnknown++;
-          }
-          stats.processed++;
+      await patchBatch({geoInfo:{source:geo.source,quality:geo.quality||null}});
+
+      await runFilterPass(stats);
+
+      // Anything the pass could not settle, or accepted with gaps, gets exactly
+      // one card fetch - then the whole thing is filtered again so the recovered
+      // organisations land in the register.
+      const queued=filterStop?0:(await storeTotals()).pendingPriority;
+      if(queued){
+        stats.cardsQueued=queued;
+        await patchBatch({filterPhase:'CARDS',filterStats:{...stats}});
+        blog('card pass started',{queued});
+        await runCardPass(stats);
+        if(!filterStop){
+          const carried={cardsQueued:stats.cardsQueued,cardsDone:stats.cardsDone,cardsLoaded:stats.cardsLoaded,cardsFailed:stats.cardsFailed};
+          stats={...blank(),...carried};
+          await patchBatch({filterPhase:'REFILTERING',filterStats:{...stats}});
+          await runFilterPass(stats);
         }
-        if(forEnrich.length)await store('flagForEnrich',{keys:forEnrich});
-        const written=accepted.length?await store('putFinal',{records:accepted}):null;
-        await patchBatch({filterStats:{...stats},finalCount:written?written.finalCount:batch.finalCount});
-        await sleep(0);
-      });
-      await patchBatch({filterStatus:'COMPLETED',filterPhase:'DONE',filterError:null,filterCompletedAt:Date.now(),filterStats:{...stats}});
-      blog('filter completed',{rawUnique:stats.total,accepted:stats.accepted,needsCard:stats.needsCard,ambiguousDistrict:stats.ambiguousDistrict,noCoords:stats.rejectedNoCoords});
+      }
+
+      await patchBatch({filterStatus:filterStop?'STOPPED':'COMPLETED',filterPhase:filterStop?'STOPPED':'DONE',filterError:null,filterCompletedAt:Date.now(),filterStats:{...stats},...await storeTotals()});
+      blog('filter finished',{accepted:stats.accepted,cards:stats.cardsDone,stopped:filterStop});
     }catch(e){
       const message=e?.message||String(e);
       await patchBatch({filterStatus:'ERROR',filterPhase:'ERROR',filterError:message,filterCompletedAt:Date.now(),filterStats:{...stats}});
       blog('filter error',{message,processed:stats.processed,rawUnique:stats.total});
     }
   };
+  const stopFilter = () => { filterStop=true; };
 
   // -------- UI --------
   const autoLabel = s => ({RUNNING:'Сбор',PAUSED:'Пауза',COMPLETED:'СБОР ЗАВЕРШЁН',STOPPED:'Остановлено',ERROR:'Ошибка',USER_ACTION_REQUIRED:'USER ACTION REQUIRED',IDLE:'Готов'})[s] || s;
@@ -1091,28 +1087,25 @@
       if(running||paused||action||finished||error)stats+=`<div>RAW уникальных организаций: <b>${batch.uniqueCount}</b></div><div>Всего попаданий по запросам: ${batch.sourceHits}</div><div>Хранилище: IndexedDB (расширение)</div>`;stats+='</div>';}
     let filter='';
     if((finished||error)&&batch.uniqueCount){
-      const statusText=filterRunning?`${filterPct}%`:filterCompleted?'ГОТОВО':filterError?'ОШИБКА':'НЕ ЗАПУЩЕНА';
+      const phase={FILTERING:'Классифицирую реестр',CARDS:'Догружаю карточки',REFILTERING:'Пересчитываю после карточек',DONE:'Готово',STOPPED:'Остановлена',ERROR:'Ошибка'}[batch.filterPhase]||'Не запущена';
+      const statusText=filterRunning?`${filterPct}%`:filterCompleted?'ГОТОВО':filterError?'ОШИБКА':batch.filterStatus==='STOPPED'?'ОСТАНОВЛЕНА':'НЕ ЗАПУЩЕНА';
       filter=`<div style="margin-top:8px;padding:9px;border:1px solid #e5e7eb;border-radius:7px;background:#fafafa;font-size:11px">`+
-        `<div style="display:flex;justify-content:space-between;gap:8px"><b>ЛОКАЛЬНАЯ ФИЛЬТРАЦИЯ</b><b>${statusText}</b></div>`;
-      if(filterRunning)filter+=bar(filterPct)+`<div style="margin-top:4px">${batch.filterPhase==='LOADING_GEO'?'Проверяю локальные границы районов…':`Проверено ${fs.processed} / ${fs.total}`}</div>`;
-      if(filterCompleted||filterError)filter+=`<div style="display:grid;grid-template-columns:1fr auto;gap:3px 10px;margin-top:6px">`+
-        `<span>RAW</span><b>${fs.total}</b><span>Принято в FINAL</span><b>${fs.accepted}</b><span>Отсеяно категорией</span><b>${fs.rejectedCategory}</b><span>Отсеяно районом</span><b>${fs.rejectedDistrict}</b><span>Без координат</span><b>${fs.rejectedNoCoords||0}</b><span>Нужна карточка</span><b>${fs.needsCard||0}</b><span>Неопределённо</span><b>${fs.rejectedUnknown}</b><span>Район определён неоднозначно</span><b>${fs.ambiguousDistrict||0}</b></div>`;
-      if(batch.geoInfo)filter+=`<div style="margin-top:5px;color:#444">Границы: ${esc(batch.geoInfo.source||'—')}${batch.geoInfo.quality?` · неоднозначная площадь ЮЗАО: ${batch.geoInfo.quality.ambiguousPercent}%`:''}</div>`;
-      if(batch.filterError)filter+=`<div style="margin-top:5px;color:#a16207;word-break:break-word">Фильтр: ${esc(batch.filterError)}. RAW-данные сохранены.</div>`;
-      filter+='</div>';
-    }
-    const es=batch.enrichStats||{processed:0,updated:0,failed:0,total:0};
-    const enrichRunning=batch.enrichStatus==='RUNNING';
-    const enrichPct=es.total?Math.round(es.processed/es.total*100):0;
-    let enrich='';
-    if((finished||error)&&(batch.pendingDetail||batch.pendingPriority||enrichRunning||es.processed)){
-      enrich=`<div style="margin-top:8px;padding:9px;border:1px solid #e5e7eb;border-radius:7px;background:#fafafa;font-size:11px">`+
-        `<div style="display:flex;justify-content:space-between;gap:8px"><b>ДОЗАГРУЗКА КАРТОЧЕК</b><b>${enrichRunning?enrichPct+'%':batch.enrichStatus==='COMPLETED'?'ГОТОВО':batch.enrichStatus==='STOPPED'?'ОСТАНОВЛЕНА':batch.pendingDetail?'НЕ ЗАПУЩЕНА':'НЕ ТРЕБУЕТСЯ'}</b></div>`+
-        `<div style="margin-top:3px">Строк из выдачи без карточки: <b>${batch.pendingDetail||0}</b>${batch.pendingPriority?`, из них нужных после фильтра: <b>${batch.pendingPriority}</b>`:''}</div>`+
-        (enrichRunning?bar(enrichPct)+`<div style="margin-top:4px">Дозагружено ${es.processed} / ${es.total}, обновлено ${es.updated}, не удалось ${es.failed}</div>`:'')+
-        (!enrichRunning&&es.processed?`<div style="margin-top:4px">Обновлено ${es.updated}, не удалось ${es.failed}</div>`:'')+
-        `<div style="margin-top:4px;color:#555">Сбор берёт данные из самой выдачи и не запрашивает карточку каждой организации. Телефон, сайт и часы работы догружаются здесь — отдельно, с паузами, это можно прервать и продолжить. Сначала прогоните FILTER RAW → FINAL: после этого кнопка «ДОЗАГРУЗИТЬ НУЖНЫЕ» берёт только принятые в FINAL и те, по которым фильтру не хватило данных. После дозагрузки прогоните фильтр ещё раз.</div>`+
+        `<div style="display:flex;justify-content:space-between;gap:8px"><b>ЛОКАЛЬНАЯ ФИЛЬТРАЦИЯ</b><b>${statusText}</b></div>`+
+        `<div style="margin-top:3px;color:#444">${esc(phase)}</div>`;
+      if(filterRunning&&batch.filterPhase!=='CARDS')filter+=bar(filterPct)+`<div style="margin-top:4px">Проверено ${fs.processed} / ${fs.total}</div>`;
+      if(batch.filterPhase==='CARDS'){
+        const cardPct=fs.cardsQueued?Math.round(fs.cardsDone/fs.cardsQueued*100):0;
+        filter+=bar(cardPct)+`<div style="margin-top:4px">Карточек ${fs.cardsDone} / ${fs.cardsQueued} · загружено ${fs.cardsLoaded}, не удалось ${fs.cardsFailed}</div>`;
+      }
+      if(filterCompleted||filterError||batch.filterStatus==='STOPPED')filter+=`<div style="display:grid;grid-template-columns:1fr auto;gap:3px 10px;margin-top:6px">`+
+        `<span>RAW</span><b>${fs.total}</b><span>Принято в FINAL</span><b>${fs.accepted}</b><span>Отсеяно районом</span><b>${fs.rejectedDistrict}</b><span>Отсеяно категорией</span><b>${fs.rejectedCategory}</b><span>Без координат</span><b>${fs.rejectedNoCoords||0}</b><span>Неопределённо</span><b>${fs.rejectedUnknown}</b>`+
+        (fs.cardsDone?`<span>Догружено карточек</span><b>${fs.cardsLoaded} из ${fs.cardsQueued}</b>`:'')+
+        (fs.ambiguousDistrict?`<span>Район определён неоднозначно</span><b>${fs.ambiguousDistrict}</b>`:'')+
       `</div>`;
+      if(batch.geoInfo)filter+=`<div style="margin-top:5px;color:#444">Границы: ${esc(batch.geoInfo.source||'—')}</div>`;
+      if(batch.filterError)filter+=`<div style="margin-top:5px;color:#a16207;word-break:break-word">Фильтр: ${esc(batch.filterError)}. RAW-данные сохранены.</div>`;
+      filter+=`<div style="margin-top:5px;color:#555">Фильтрация сама догружает карточки тем организациям, у которых в выдаче не хватило телефона, сайта, часов или категории — и только им.</div>`;
+      filter+='</div>';
     }
     const warnList=(batch.warnings||[]);
     const warnBlock=warnList.length?`<div style="margin-top:8px;padding:8px;border:1px solid #f0c674;border-radius:7px;background:#fffbeb;font-size:11px;color:#7c5a00"><b>НЕПОЛНЫЙ СБОР: ${warnList.length} запрос(ов)</b>${warnList.slice(0,6).map(w=>`<div style="margin-top:3px;word-break:break-word">• ${esc(w.query)} → ${w.unique} карточек</div>`).join('')}${warnList.length>6?`<div style="margin-top:3px">…ещё ${warnList.length-6}</div>`:''}<div style="margin-top:4px">EXPORT RAW пометит файл как RAW_PARTIAL.</div></div>`:'';
@@ -1125,15 +1118,15 @@
     if(paused||action)buttons=btn('RESUME BATCH','batch-resume')+btn('STOP BATCH','batch-stop');
     if(finished||error){
       buttons+=btn('IMPORT RAW CSV','batch-raw-file');
-      if(enrichRunning)buttons+=btn('ОСТАНОВИТЬ ДОЗАГРУЗКУ','enrich-stop');
-      else if(batch.pendingDetail){
-        if(batch.pendingPriority)buttons+=btn(`ДОЗАГРУЗИТЬ НУЖНЫЕ (${batch.pendingPriority})`,'enrich-final');
-        buttons+=btn(`ДОЗАГРУЗИТЬ ВСЕ КАРТОЧКИ (${batch.pendingDetail})`,'enrich-start');
+      if(batch.uniqueCount){
+        buttons+=btn(`EXPORT RAW (${batch.uniqueCount})`,'batch-export-raw');
+        if(filterRunning)buttons+=btn('ОСТАНОВИТЬ ФИЛЬТРАЦИЮ','batch-filter-stop');
+        else buttons+=btn(filterCompleted||filterError||batch.filterStatus==='STOPPED'?'ПЕРЕФИЛЬТРОВАТЬ RAW → FINAL':'FILTER RAW → FINAL','batch-filter');
+        if(batch.finalCount)buttons+=btn(`EXPORT FINAL (${batch.finalCount})`,'batch-export-final');
       }
-      if(batch.uniqueCount){buttons+=btn(`EXPORT RAW (${batch.uniqueCount})`,'batch-export-raw');if(!filterRunning)buttons+=btn(filterCompleted||filterError?'ПЕРЕФИЛЬТРОВАТЬ RAW → FINAL':'FILTER RAW → FINAL','batch-filter');if(filterCompleted&&batch.finalCount)buttons+=btn(`EXPORT FINAL (${batch.finalCount})`,'batch-export-final');}
       if(!filterRunning)buttons+=btn(`RESET BATCH — УДАЛИТЬ RAW (${batch.uniqueCount})`,'batch-reset','color:#a16207');
     }
-    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.8.0</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${enrich}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
+    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.9.0</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
   };
 
   const render = () => {
@@ -1144,9 +1137,7 @@
       'batch-start':()=>startBatch().catch(batchFatal),'batch-pause':pauseBatch,'batch-resume':resumeBatch,'batch-stop':stopBatch,'batch-reset':()=>resetBatch().catch(batchFatal),'batch-export-raw':()=>exportBatchRaw().catch(batchFatal),'batch-filter':()=>filterBatch().catch(batchFatal),'batch-export-final':()=>exportBatchFinal().catch(batchFatal),
       'batch-file':()=>panel.querySelector('#gls-batch-file')?.click(),
       'batch-raw-file':()=>panel.querySelector('#gls-raw-file')?.click(),
-      'enrich-start':()=>enrichCards('all').catch(batchFatal),
-      'enrich-final':()=>enrichCards('final').catch(batchFatal),
-      'enrich-stop':stopEnrich,
+      'batch-filter-stop':stopFilter,
     };
     panel.querySelectorAll('[data-gls-action]').forEach(b=>b.addEventListener('click',()=>actions[b.dataset.glsAction]?.()));
     const input=panel.querySelector('#gls-batch-file');
@@ -1197,7 +1188,7 @@
       // still in chrome.storage at that point and is not touched on failure.
       try{await migrateLegacyDataset(stored);}catch(e){blog('dataset migration failed',e?.message||e);}
       if(stored?.[AUTO_KEY]?.status){state={...blankAuto(),...stored[AUTO_KEY]};delete state.data;seenUrls=new Set(Array.isArray(state.seenUrls)?state.seenUrls:[]);seenPlaceIds=new Set(Array.isArray(state.seenPlaceIds)?state.seenPlaceIds:[]);acceptedKeys=new Set(Array.isArray(state.acceptedKeys)?state.acceptedKeys:[]);}
-      if(stored?.[BATCH_KEY]?.status){batch={...blankBatch(),...stored[BATCH_KEY],queue:Array.isArray(stored[BATCH_KEY].queue)?stored[BATCH_KEY].queue:[],filterStats:{...blankBatch().filterStats,...(stored[BATCH_KEY].filterStats||{})},warnings:Array.isArray(stored[BATCH_KEY].warnings)?stored[BATCH_KEY].warnings:[]};delete batch.data;delete batch.cardCache;delete batch.finalData;if(batch.filterStatus==='RUNNING'){batch.filterStatus='ERROR';batch.filterPhase='ERROR';batch.filterError='Локальная фильтрация была прервана перезагрузкой страницы. RAW-данные сохранены; запустите фильтрацию ещё раз.';}if(batch.enrichStatus==='RUNNING')batch.enrichStatus='STOPPED';}
+      if(stored?.[BATCH_KEY]?.status){batch={...blankBatch(),...stored[BATCH_KEY],queue:Array.isArray(stored[BATCH_KEY].queue)?stored[BATCH_KEY].queue:[],filterStats:{...blankBatch().filterStats,...(stored[BATCH_KEY].filterStats||{})},warnings:Array.isArray(stored[BATCH_KEY].warnings)?stored[BATCH_KEY].warnings:[]};delete batch.data;delete batch.cardCache;delete batch.finalData;if(batch.filterStatus==='RUNNING'){batch.filterStatus='ERROR';batch.filterPhase='ERROR';batch.filterError='Локальная фильтрация была прервана перезагрузкой страницы. RAW-данные сохранены; запустите фильтрацию ещё раз.';}}
     }catch(e){blog('restore failed',e?.message||e);}
     // The store is the source of truth for the totals, not the snapshot.
     try{batch={...batch,...await storeTotals()};}catch(e){blog('store unavailable',e?.message||e);}

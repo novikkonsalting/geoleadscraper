@@ -217,96 +217,82 @@ fast.setDocumentStateView('not json at all');
 fast.api.getListEntities().clear();
 check('an unreadable state-view just yields nothing', fast.api.seedFromDocument() === 0);
 
-// --- enrichment pass ---------------------------------------------------------
-section('card enrichment');
+// --- filtering now tops up the rows that need it -----------------------------
+section('filter with automatic card top-up');
+const akademicheskiy = { district: 'Академический', group: 'Общепит', category: 'Ресторан', query: 'рестораны Академический район Москва' };
 await fast.api.store('clearRaw');
 await fast.api.store('putRaw', {
   records: [
-    { place_id: '5000001', title: 'Из выдачи', maps_url: 'https://yandex.ru/maps/org/a/5000001/', detail_level: 'LIST' },
-    { place_id: '5000002', title: 'Без карточки', maps_url: 'https://yandex.ru/maps/org/b/5000002/', detail_level: 'LIST' },
-    { place_id: '5000003', title: 'Полная карточка', maps_url: 'https://yandex.ru/maps/org/c/5000003/', detail_level: 'CARD' },
+    // accepted and complete - must not cost a request
+    { place_id: '6000001', title: 'Полная', maps_url: 'https://yandex.ru/maps/org/a/6000001/', detail_level: 'LIST',
+      categories: 'Ресторан', phone: '+74950000001', website: 'https://a.ru/', opening_hours: 'ежедневно',
+      latitude: 55.687149, longitude: 37.572078 },
+    // accepted but missing a site
+    { place_id: '6000002', title: 'Без сайта', maps_url: 'https://yandex.ru/maps/org/b/6000002/', detail_level: 'LIST',
+      categories: 'Ресторан', phone: '+74950000002', website: '', opening_hours: 'ежедневно',
+      latitude: 55.688449, longitude: 37.573502 },
+    // another district - settled by geography, never worth a card
+    { place_id: '6000003', title: 'Другой район', maps_url: 'https://yandex.ru/maps/org/c/6000003/', detail_level: 'LIST',
+      categories: '', phone: '', website: '', opening_hours: '', latitude: 55.691872, longitude: 37.561413 },
+    // in the district but the list entry is empty - this is how "Батони" was lost
+    { place_id: '6000004', title: 'Батони', maps_url: 'https://yandex.ru/maps/org/d/6000004/', detail_level: 'LIST',
+      categories: '', phone: '', website: '', opening_hours: '', latitude: 55.687149, longitude: 37.572078 },
   ],
-  record: { district: 'Академический', group: 'Общепит', category: 'Ресторан', query: 'q1' },
+  record: akademicheskiy,
 });
-check('rows from the list are queued for enrichment, full cards are not',
-  (await fast.api.storeTotals()).pendingDetail === 2, JSON.stringify(await fast.api.storeTotals()));
 
-fast.setCardFetcher(async url => url.includes('5000001')
-  ? { place_id: '5000001', title: 'Переименовано в карточке', phone: '+74951234567', website: 'https://example.ru/', email: 'a@b.ru' }
-  : null);
-await fast.api.enrichCards();
-const enriched = await fast.api.store('getRawByPlaceId', { place_id: '5000001' });
-check('enrichment fills in the card-only fields',
-  enriched.phone === '+74951234567' && enriched.website === 'https://example.ru/' && enriched.email === 'a@b.ru');
-check('the fetched card is authoritative, so an enriched row equals one collected by card fetch',
-  enriched.title === 'Переименовано в карточке', enriched.title);
-check('the enriched row is marked as a full card', enriched.detail_level === 'CARD', enriched.detail_level);
-check('enrichment preserves provenance', fast.shared.sourceRecords(enriched).length === 1);
-check('an unfetchable row leaves the queue instead of looping forever',
-  (await fast.api.storeTotals()).pendingDetail === 0);
-const unfetched = await fast.api.store('getRawByPlaceId', { place_id: '5000002' });
-check('a row that never got a card says so in the export',
-  unfetched.detail_level === 'LIST_ONLY' && unfetched.title === 'Без карточки', unfetched.detail_level);
-await fast.api.store('enrichRaw', { records: [{ key: enriched.key, fields: { phone: '', website: undefined, email: null } }] });
-const stillFull = await fast.api.store('getRawByPlaceId', { place_id: '5000001' });
-check('empty values from a thin card never erase what was already stored',
-  stillFull.phone === '+74951234567' && stillFull.website === 'https://example.ru/');
-check('enrichment reports what happened',
-  fast.api.getBatch().enrichStats.updated === 1 && fast.api.getBatch().enrichStats.failed === 1,
-  JSON.stringify(fast.api.getBatch().enrichStats));
-check('enrichment finished cleanly', fast.api.getBatch().enrichStatus === 'COMPLETED');
-await fast.api.enrichCards();
-check('re-running with nothing pending is a no-op', fast.api.getBatch().enrichStats.total === 0);
+check('a complete list row needs no card', !fast.api.needsCardData({ detail_level: 'LIST', categories: 'Ресторан', phone: '1', website: '2', opening_hours: '3' }));
+check('a row missing one field does', fast.api.needsCardData({ detail_level: 'LIST', categories: 'Ресторан', phone: '1', website: '', opening_hours: '3' }));
+check('a row that already came from a card never does', !fast.api.needsCardData({ detail_level: 'CARD', categories: '', phone: '', website: '', opening_hours: '' }));
 
-// Filtering before enriching is the point: the expensive pass then goes only
-// where it matters. Crucially, a row the filter could not decide on because its
-// list entry was too thin must be queued for a card - not thrown away, which is
-// how "Батони" was lost from a real Академический run.
+const asked = [];
+fast.setCardFetcher(async url => {
+  asked.push(url);
+  return url.includes('6000004')
+    ? { categories: 'Ресторан, бар', phone: '+74950000004', website: 'https://batoni.ru/', opening_hours: 'ежедневно' }
+    : { website: 'https://b.ru/' };
+});
+await fast.api.filterBatch();
+const f = fast.api.getBatch();
+check('filtering runs to completion on its own', f.filterStatus === 'COMPLETED' && f.filterPhase === 'DONE',
+  `${f.filterStatus}/${f.filterPhase} ${f.filterError || ''}`);
+check('cards were fetched only for the two rows that needed them',
+  asked.length === 2 && !asked.some(u => u.includes('6000001')) && !asked.some(u => u.includes('6000003')),
+  JSON.stringify(asked));
+check('the organisation with an empty list entry is recovered into FINAL',
+  f.filterStats.accepted === 3, JSON.stringify(f.filterStats));
+check('the one in another district is still rejected on geography',
+  f.filterStats.rejectedDistrict === 1, JSON.stringify(f.filterStats));
+check('the card counters are reported', f.filterStats.cardsQueued === 2 && f.filterStats.cardsLoaded === 2,
+  JSON.stringify(f.filterStats));
+const recovered = await fast.api.store('getRawByPlaceId', { place_id: '6000004' });
+check('the recovered row keeps its provenance', fast.shared.sourceRecords(recovered).length === 1);
+check('the top-up filled the gap that was blocking it', recovered.categories === 'Ресторан, бар');
+const topped = await fast.api.store('getRawByPlaceId', { place_id: '6000002' });
+check('an accepted row had its missing field filled in', topped.website === 'https://b.ru/');
+check('nothing is left waiting', (await fast.api.storeTotals()).pendingPriority === 0);
+
+asked.length = 0;
+await fast.api.filterBatch();
+check('re-filtering asks for no further cards', asked.length === 0, JSON.stringify(asked));
+check('and reaches the same register', fast.api.getBatch().filterStats.accepted === 3);
+
+// Stopping has to take effect and leave the rest resumable.
 await fast.api.store('clearRaw');
 await fast.api.store('putRaw', {
-  records: [
-    { place_id: '6000001', title: 'Принят', maps_url: 'https://yandex.ru/maps/org/a/6000001/', detail_level: 'LIST',
-      categories: 'Ресторан, бар', latitude: 55.687149, longitude: 37.572078 },
-    { place_id: '6000002', title: 'Другой район', maps_url: 'https://yandex.ru/maps/org/b/6000002/', detail_level: 'LIST',
-      categories: 'Ресторан', latitude: 55.691872, longitude: 37.561413 },
-    { place_id: '6000003', title: 'Батони', maps_url: 'https://yandex.ru/maps/org/c/6000003/', detail_level: 'LIST',
-      categories: '', latitude: 55.688449, longitude: 37.573502 },
-  ],
-  record: { district: 'Академический', group: 'Общепит', category: 'Ресторан', query: 'рестораны Академический район Москва' },
+  records: Array.from({ length: 5 }, (_, i) => ({
+    place_id: `700000${i}`, title: `R${i}`, maps_url: `https://yandex.ru/maps/org/x/700000${i}/`,
+    detail_level: 'LIST', categories: 'Ресторан', phone: '', website: '', opening_hours: '',
+    latitude: 55.687149, longitude: 37.572078,
+  })),
+  record: akademicheskiy,
 });
+fast.setCardFetcher(async () => { fast.api.stopFilter(); return { phone: '+71111111111' }; });
 await fast.api.filterBatch();
-const fs2 = fast.api.getBatch().filterStats;
-check('the organisation in the district is accepted', fs2.accepted === 1, JSON.stringify(fs2));
-check('the one in another district is rejected on geography', fs2.rejectedDistrict === 1, JSON.stringify(fs2));
-check('a thin list entry is counted as needing a card, not as a wrong category',
-  fs2.needsCard === 1 && fs2.rejectedCategory === 0, JSON.stringify(fs2));
-check('accepted and undecided rows are queued for the card pass, the rejected one is not',
-  (await fast.api.storeTotals()).pendingPriority === 2, JSON.stringify(await fast.api.storeTotals()));
-
-const fetched = [];
-fast.setCardFetcher(async url => { fetched.push(url); return { phone: '+70000000000', categories: 'Ресторан' }; });
-await fast.api.enrichCards('final');
-check('the pass fetches exactly the two flagged rows',
-  fetched.length === 2 && !fetched.some(u => u.includes('6000002')), JSON.stringify(fetched));
-check('the queue is empty afterwards', (await fast.api.storeTotals()).pendingPriority === 0);
-const batoni = await fast.api.store('getRawByPlaceId', { place_id: '6000003' });
-check('the thin row now has its category', batoni.categories === 'Ресторан' && batoni.detail_level === 'CARD');
-await fast.api.filterBatch();
-check('re-filtering after the card pass recovers the organisation that was undecidable',
-  fast.api.getBatch().filterStats.accepted === 2, JSON.stringify(fast.api.getBatch().filterStats));
-
-// Stopping has to take effect immediately and leave the rest resumable.
-await fast.api.store('putRaw', {
-  records: Array.from({ length: 5 }, (_, i) => ({ place_id: `700000${i}`, title: `R${i}`, maps_url: `https://yandex.ru/maps/org/x/700000${i}/`, detail_level: 'LIST' })),
-  record: { district: '', group: '', category: '', query: 'q2' },
-});
-const before = (await fast.api.storeTotals()).pendingDetail;
-fast.setCardFetcher(async () => { fast.api.stopEnrich(); return { phone: '+71111111111' }; });
-await fast.api.enrichCards('all');
-check('STOP ends the pass right away', fast.api.getBatch().enrichStatus === 'STOPPED');
-check('what was not enriched stays queued for the next run',
-  (await fast.api.storeTotals()).pendingDetail === before - 1,
-  `${(await fast.api.storeTotals()).pendingDetail} of ${before}`);
+check('STOP ends filtering right away', fast.api.getBatch().filterStatus === 'STOPPED');
+check('what was not topped up stays queued for the next run',
+  (await fast.api.storeTotals()).pendingPriority === 4,
+  `${(await fast.api.storeTotals()).pendingPriority}`);
 
 // --- migration off chrome.storage -------------------------------------------
 section('migration of a v1.4.x dataset');

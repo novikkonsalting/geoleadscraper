@@ -85,7 +85,7 @@ export async function loadExtension({ withStore = false } = {}) {
       parseRawCsv, parseBatchCsv, parseDelimited, normalizeCoords, detectGeoDistrict, categoryMatch,
       placeIdFromUrl, ensureGeo, evaluateItem, store, storeTotals, eachStored,
       loadRawText, filterBatch, resetBatch, restore, migrateLegacyDataset,
-      enrichCards, stopEnrich, seedFromDocument, rememberEntities,
+      stopFilter, needsCardData, seedFromDocument, rememberEntities,
       setGeoCache: c => { geoCache = c; },
       buildGeoCache, embeddedGeo,
       getListEntities: () => listEntities,
