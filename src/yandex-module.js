@@ -203,6 +203,21 @@
   const includesAny = (value,tokens) => tokens.some(token=>value.includes(token));
   const FOOD_SERVICE=['ресторан','кафе','кофейн','столов','быстрое питание','фастфуд','пиццер','суши','бар','паб','чайхан','закусоч'];
   const RETAIL_HINT=['магазин','маркет','лавка','супермаркет','минимаркет','торгов'];
+
+  // The eleven categories in the query file are a way of finding organisations,
+  // not a classification contract. Yandex files a meat shop under "магазин мяса,
+  // колбас" and Магнит under "супермаркет" no matter which query surfaced them,
+  // so an organisation is also accepted when its own category puts it in the
+  // group the query belongs to - общепит or продуктовая розница.
+  const GROUP_TOKENS={
+    'общепит':['ресторан','кафе','кофейн','столов','быстрое питание','фастфуд','пиццер','суши','роллы','бар','паб','чайхан','закусоч','пекарн','кондитер','торты на заказ','кулинар','доставка еды','шаурм','бургер','блинная','пельмен','пышеч','чебуреч','донер','шашлы','хинкал','кейтеринг','food court','фуд-корт','бистро','трактир','таверна','кальян-бар','караоке-клуб','банкетный зал'],
+    'продуктовая розница':['магазин продуктов','продуктовый магазин','продукты питания','супермаркет','минимаркет','гипермаркет','магазин мяса','колбас','мясная продукция','рыба и морепродукт','рыбный магазин','магазин овощей','овощи и фрукт','алкогольные напитки','винный магазин','винотека','магазин разливных напитков','магазин чая','магазин кофе','чай и кофе','магазин сыр','сырная лавка','кондитерские изделия','фермерск','продукты пчеловодства','диетическ','орех','сухофрукт','специи','бакалея','мука и крупы','хлебобул','магазин мороженого','магазин здорового питания','магазин кулинарии','молочн'],
+  };
+  const categoryGroups = categoriesRaw => {
+    const actual=normalize(categoriesRaw);
+    if(!actual)return [];
+    return Object.entries(GROUP_TOKENS).filter(([,tokens])=>includesAny(actual,tokens)).map(([group])=>group);
+  };
   const DISTRICTS={
     'Академический':['академический район','район академический'],
     'Гагаринский':['гагаринский район','район гагаринский'],
@@ -353,7 +368,7 @@
   const currentBatchQuery = () => [BATCH.RUNNING,BATCH.PAUSED,BATCH.USER_ACTION_REQUIRED].includes(batch.status) ? batch.queue[batch.currentIndex] || null : null;
   const evaluateItem = async (item,forcedQuery=null) => {
     const q=forcedQuery||currentBatchQuery();
-    const base={accept:true,categoryValidation:'UNKNOWN',districtValidation:'UNKNOWN',districtQuality:'NOT_CHECKED',detectedDistrict:'',districtCandidates:[],needsCard:false};
+    const base={accept:true,categoryValidation:'UNKNOWN',districtValidation:'UNKNOWN',districtQuality:'NOT_CHECKED',detectedDistrict:'',districtCandidates:[],detectedGroups:[],needsCard:false};
     if(!q)return base;
     const thin=item.detail_level!=='CARD';
 
@@ -383,11 +398,14 @@
     // fetched later.
     const hasCategories=!!String(item.categories||'').trim();
     const cm=categoryMatch(q.category,item.categories);
-    const categoryValidation=!hasCategories?'NO_DATA':cm==null?'UNKNOWN':cm?'MATCH':'MISMATCH';
-    if(q.category&&categoryValidation!=='MATCH')
-      return {...base,...districtPart,accept:false,categoryValidation,needsCard:categoryValidation==='NO_DATA'&&thin};
+    const groups=categoryGroups(item.categories);
+    const groupMatch=!!q.group&&groups.includes(normalize(q.group));
+    const categoryValidation=!hasCategories?'NO_DATA':cm?'MATCH':groupMatch?'GROUP_MATCH':cm==null?'UNKNOWN':'MISMATCH';
+    const detectedGroups=groups.map(g=>g==='общепит'?'Общепит':'Продуктовая розница');
+    if(q.category&&categoryValidation!=='MATCH'&&categoryValidation!=='GROUP_MATCH')
+      return {...base,...districtPart,accept:false,categoryValidation,detectedGroups,needsCard:categoryValidation==='NO_DATA'&&thin};
 
-    return {...base,...districtPart,accept:true,categoryValidation};
+    return {...base,...districtPart,accept:true,categoryValidation,detectedGroups};
   };
 
   const getQuery = () => {
@@ -716,7 +734,7 @@
       write => eachStored('listRaw', rows => write(rows.map(row=>({...row,...meta})))));
   };
   const exportBatchFinal = async () => saveCsvStream('geoleadscraper-yandex_maps-FINAL_FILTERED',
-    ['matched_source_district','matched_source_group','matched_source_category','title','address','phone','website','maps_url','source','matched_source_query','matched_source_queries_count','matched_source_records','category_validation','district_validation','district_quality','district_candidates','detected_district','detail_level','final_status','exclude_reason','place_id','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'],
+    ['matched_source_district','matched_source_group','matched_source_category','title','address','phone','website','maps_url','source','matched_source_query','matched_source_queries_count','matched_source_records','category_validation','detected_category_group','district_validation','district_quality','district_candidates','detected_district','detail_level','final_status','exclude_reason','place_id','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'],
     write => eachStored('listFinal', rows => write(rows)));
 
   // -------- BATCH CSV --------
@@ -927,12 +945,13 @@
           // no category or no district in the query is UNKNOWN, not MATCH:
           // search metadata and verified metadata must stay separate.
           const categoryValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.categoryValidation))||'UNKNOWN';
+          const detectedGroups=uniqueJoined(uniqueAccepted.flatMap(x=>x.decision.detectedGroups||[]));
           const districtValidation=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtValidation))||'UNKNOWN';
           const districtQuality=uniqueJoined(uniqueAccepted.map(x=>x.decision.districtQuality))||'NOT_CHECKED';
           const candidates=uniqueJoined(uniqueAccepted.flatMap(x=>x.decision.districtCandidates||[]));
           const ambiguous=uniqueAccepted.some(x=>x.decision.districtQuality==='AMBIGUOUS');
           if(ambiguous)stats.ambiguousDistrict++;
-          accepted.push({...item,category_validation:categoryValidation,district_validation:districtValidation,district_quality:districtQuality,district_candidates:ambiguous?candidates:'',detected_district:detected,matched_source_district:uniqueJoined(matched.map(x=>x.district)),matched_source_group:uniqueJoined(matched.map(x=>x.group)),matched_source_category:uniqueJoined(matched.map(x=>x.category)),matched_source_query:uniqueJoined(matched.map(x=>x.query)),matched_source_records:JSON.stringify(matched),matched_source_queries_count:matched.length,final_status:'ACCEPTED',exclude_reason:''});
+          accepted.push({...item,category_validation:categoryValidation,detected_category_group:detectedGroups,district_validation:districtValidation,district_quality:districtQuality,district_candidates:ambiguous?candidates:'',detected_district:detected,matched_source_district:uniqueJoined(matched.map(x=>x.district)),matched_source_group:uniqueJoined(matched.map(x=>x.group)),matched_source_category:uniqueJoined(matched.map(x=>x.category)),matched_source_query:uniqueJoined(matched.map(x=>x.query)),matched_source_records:JSON.stringify(matched),matched_source_queries_count:matched.length,final_status:'ACCEPTED',exclude_reason:''});
           stats.accepted++;stats.matchedSourceRecords+=matched.length;
           // Accepted but incomplete: it belongs in the register now, and the
           // missing contact fields are worth one card fetch.
@@ -1170,7 +1189,7 @@
       }
       if(!filterRunning)buttons+=btn(`RESET BATCH — УДАЛИТЬ RAW (${batch.uniqueCount})`,'batch-reset','color:#a16207');
     }
-    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.9.2</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
+    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.10.0</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
   };
 
   const render = () => {

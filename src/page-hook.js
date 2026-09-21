@@ -14,12 +14,20 @@
   if (window.__glsPageHookInstalled) return;
   window.__glsPageHookInstalled = true;
 
+  // One page load serves one query, so there is a natural ceiling on how much
+  // is worth reading. Past it the hook stops parsing entirely, which keeps a
+  // long batch from spending the whole run in JSON.parse.
+  const HARVEST_BUDGET = 8000;
+  let harvested = 0;
+
   const post = entities => {
     if (!entities.length) return;
+    harvested += entities.length;
     try { window.postMessage({ __glsEntities: entities }, '*'); } catch { /* ignore */ }
   };
 
   const harvest = text => {
+    if (harvested >= HARVEST_BUDGET) return;
     try { post(globalThis.GLSEntities.fromText(text)); } catch { /* ignore */ }
   };
 

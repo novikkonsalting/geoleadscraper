@@ -55,7 +55,10 @@
   // nested arrays. Walking that on the main thread is what freezes the tab, so
   // the walk is bounded and simply gives up on anything that large.
   const MAX_NODES = 200000;
-  const MAX_TEXT_BYTES = 4 * 1024 * 1024;
+  // A Yandex search payload carrying ~40 organisations is around 60 KB. Map and
+  // tile payloads are orders of magnitude larger, and parsing them repeatedly
+  // over an hour-long run is what pushes the tab towards a renderer crash.
+  const MAX_TEXT_BYTES = 1024 * 1024;
   const collect = (value, out, seen, depth, budget) => {
     if (depth > MAX_DEPTH || !value || typeof value !== 'object') return;
     if (budget.left-- <= 0) return;
@@ -103,12 +106,20 @@
   if (window.__glsPageHookInstalled) return;
   window.__glsPageHookInstalled = true;
 
+  // One page load serves one query, so there is a natural ceiling on how much
+  // is worth reading. Past it the hook stops parsing entirely, which keeps a
+  // long batch from spending the whole run in JSON.parse.
+  const HARVEST_BUDGET = 8000;
+  let harvested = 0;
+
   const post = entities => {
     if (!entities.length) return;
+    harvested += entities.length;
     try { window.postMessage({ __glsEntities: entities }, '*'); } catch { /* ignore */ }
   };
 
   const harvest = text => {
+    if (harvested >= HARVEST_BUDGET) return;
     try { post(globalThis.GLSEntities.fromText(text)); } catch { /* ignore */ }
   };
 

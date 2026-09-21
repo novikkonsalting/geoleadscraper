@@ -162,6 +162,31 @@ const free = await api.evaluateItem({ latitude: 55.6875, longitude: 37.5730, cat
 check('a query without district/category yields UNKNOWN, never a fake MATCH',
   free.accept && free.categoryValidation === 'UNKNOWN' && free.districtValidation === 'UNKNOWN');
 check('unknown category stays UNKNOWN', api.categoryMatch('Ночной клуб', 'Ресторан') === null);
+
+// The eleven query categories are a way of finding organisations, not a
+// classification contract: a real district run lost 26 shops because Yandex
+// files them under its own category rather than the one that surfaced them.
+const groupCase = async (categories, group, category) => api.evaluateItem(
+  { latitude: 55.687149, longitude: 37.572078, categories, detail_level: 'CARD' },
+  { district: 'Академический', group, category, query: 'q' });
+const meat = await groupCase('Магазин мяса, колбас', 'Продуктовая розница', 'Продуктовый магазин');
+check('a meat shop found by the grocery query is kept, flagged as a group match',
+  meat.accept && meat.categoryValidation === 'GROUP_MATCH', JSON.stringify(meat));
+const magnit = await groupCase('Супермаркет, магазин продуктов', 'Продуктовая розница', 'Специализированная пищевая розница');
+check('a supermarket found by the specialist-retail query is kept', magnit.accept);
+const pizza = await groupCase('Пиццерия, доставка еды и обедов', 'Общепит', 'Кафе');
+check('a pizzeria found by the cafe query is kept', pizza.accept);
+const exact = await groupCase('Ресторан, бар', 'Общепит', 'Ресторан');
+check('an exact match is still reported as MATCH, not as a group match',
+  exact.categoryValidation === 'MATCH', exact.categoryValidation);
+const cakes = await groupCase('Торты на заказ', 'Общепит', 'Пекарня / кондитерская');
+check('a cake maker is recognised as общепит', cakes.accept && cakes.detectedGroups.includes('Общепит'));
+const wrongGroup = await groupCase('Магазин мяса, колбас', 'Общепит', 'Ресторан');
+check('a shop is not let in through a catering query', !wrongGroup.accept, JSON.stringify(wrongGroup));
+const offScope = await groupCase('Аптека, магазин хозтоваров', 'Продуктовая розница', 'Продуктовый магазин');
+check('something outside the food scope is still rejected', !offScope.accept, JSON.stringify(offScope));
+check('the detected group is reported for the register',
+  (await groupCase('Супермаркет', 'Продуктовая розница', 'Супермаркет')).detectedGroups.join() === 'Продуктовая розница');
 check('restaurant category rejects a shop', api.categoryMatch('Ресторан', 'Магазин продуктов') === false);
 
 // --- RESET is the only destructive action -----------------------------------
