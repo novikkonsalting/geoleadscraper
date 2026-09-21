@@ -35,9 +35,9 @@ const first = shared.mergeRecord(null, { place_id: '1', title: 'Штолле' },
 const second = shared.mergeRecord(first.row, { place_id: '1', title: 'Штолле (переименован)' }, { district: 'Академический', group: 'Общепит', category: 'Кафе', query: 'q2' });
 check('merging keeps both source records', shared.sourceRecords(second.row).length === 2);
 check('merging keeps the first version of the card', second.row.title === 'Штолле');
-check('merging reports a new source hit', first.addedHit && second.addedHit);
+check('merging reports a new source hit', first.addedHits === 1 && second.addedHits === 1);
 const repeat = shared.mergeRecord(second.row, { place_id: '1' }, { district: 'Академический', group: 'Общепит', category: 'Кафе', query: 'q2' });
-check('the same query twice is not counted twice', !repeat.addedHit && shared.sourceRecords(repeat.row).length === 2);
+check('the same query twice is not counted twice', repeat.addedHits === 0 && shared.sourceRecords(repeat.row).length === 2);
 
 // --- store ------------------------------------------------------------------
 section('IndexedDB store, through the service-worker message path');
@@ -80,6 +80,7 @@ const rawCsv = [RAW_HEADER,
   rawRow('187388947173', 'рестораны Академический район Москва', 'Ресторан', '55.691872', '37.561413', 'Brasserie Lambic'),
 ].join('\r\n');
 
+await api.store('clearRaw');
 await api.loadRawText(rawCsv, 'test-raw.csv');
 const afterImport = await api.storeTotals();
 check('import dedupes by place_id', afterImport.uniqueCount === 3, JSON.stringify(afterImport));
@@ -88,10 +89,12 @@ check('import rebuilds the query queue', api.getBatch().queue.length === 2, `${a
 
 const withMeta = rawCsv.replace('source_queries_count,', 'export_batch_status,export_warnings,source_queries_count,')
   .replace(/"yandex_maps","([^"]+)",/g, '"yandex_maps","$1","STOPPED","",');
+await api.store('clearRaw');
 await api.loadRawText(withMeta, 'with-meta.csv');
 check('the run-provenance columns of a v1.4.2+ export do not break re-import',
   (await api.storeTotals()).uniqueCount === 3);
 
+await api.store('clearRaw');
 await api.loadRawText(rawCsv, 'test-raw.csv');
 await api.filterBatch();
 const filtered = api.getBatch();
@@ -350,6 +353,53 @@ check('STOP ends filtering right away', fast.api.getBatch().filterStatus === 'ST
 check('what was not topped up stays queued for the next run',
   (await fast.api.storeTotals()).pendingPriority === 4,
   `${(await fast.api.storeTotals()).pendingPriority}`);
+
+// --- collecting district by district ----------------------------------------
+section('several districts in one registry');
+{
+  const many = await loadExtension({ withStore: true });
+  const row = (id, query, district, category) =>
+    `"${district}","Общепит","${category}","Орг ${id}","адрес","","","https://yandex.ru/maps/org/x/${id}/","yandex_maps","${query}","1","[{""district"":""${district}"",""group"":""Общепит"",""category"":""${category}"",""query"":""${query}""}]","${id}","Ресторан","4","10","55.687149","37.572078"`;
+  const header = 'source_district,source_group,source_category,title,address,phone,website,maps_url,source,source_query,source_queries_count,source_records,place_id,categories,rating,review_count,latitude,longitude';
+  const akademicheskiy = [header, row('100', 'рестораны Академический район Москва', 'Академический', 'Ресторан'),
+                                  row('200', 'рестораны Академический район Москва', 'Академический', 'Ресторан')].join('\r\n');
+  const konkovo = [header, row('200', 'рестораны район Коньково Москва', 'Коньково', 'Ресторан'),
+                            row('300', 'рестораны район Коньково Москва', 'Коньково', 'Ресторан')].join('\r\n');
+
+  await many.api.store('clearRaw');
+  await many.api.loadRawText(akademicheskiy, '01.csv');
+  check('the first district is imported', (await many.api.storeTotals()).uniqueCount === 2);
+  await many.api.loadRawText(konkovo, '04.csv');
+  const both = await many.api.storeTotals();
+  check('importing a second district adds to the registry instead of replacing it',
+    both.uniqueCount === 3, JSON.stringify(both));
+  const shared200 = await many.api.store('getRawByPlaceId', { place_id: '200' });
+  check('an organisation found in both keeps both provenances',
+    many.shared.sourceRecords(shared200).length === 2, shared200.source_records);
+  check('and its source districts are both listed',
+    shared200.source_district === 'Академический | Коньково', shared200.source_district);
+  check('source hits count every query, not every organisation',
+    both.sourceHits === 4, `${both.sourceHits}`);
+
+  await many.api.loadRawText(konkovo, '04.csv');
+  check('importing the same file twice changes nothing',
+    (await many.api.storeTotals()).uniqueCount === 3 && (await many.api.storeTotals()).sourceHits === 4);
+
+  // Loading the next district's queries must not look like a wipe: the panel
+  // reading zero here is what makes people press RESET.
+  await many.api.loadBatchText('district;group;category;query\nЗюзино;Общепит;Ресторан;рестораны район Зюзино Москва\n', '03.csv');
+  check('loading the next queries leaves the registry alone',
+    (await many.api.storeTotals()).uniqueCount === 3);
+  check('and the panel still shows what is stored, not zero',
+    many.api.getBatch().uniqueCount === 3, `${many.api.getBatch().uniqueCount}`);
+  await many.api.startBatch().catch(() => {});
+  check('starting the next district does not reset the counter either',
+    many.api.getBatch().uniqueCount === 3, `${many.api.getBatch().uniqueCount}`);
+
+  await many.api.resetBatch();
+  check('RESET BATCH is still the one thing that clears it',
+    (await many.api.storeTotals()).uniqueCount === 0);
+}
 
 // --- the search must be centred on the district it is looking for ------------
 section('search viewport');

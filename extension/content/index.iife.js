@@ -142,19 +142,25 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
   // Merges one collected card into whatever is already stored under the same
   // key. The first version of a card wins on field values; source records
   // accumulate, so provenance survives an organisation being found by several
-  // queries. Returns the row to store plus whether a new source record was
-  // added, which the caller uses to keep the source-hits total exact.
+  // queries - and, when a RAW export is merged back in, by several runs.
+  // Returns the row to store plus how many new source records it gained, which
+  // the caller uses to keep the source-hits total exact.
   const mergeRecord = (existing, incoming, record) => {
-    const rec = cleanRecord(record);
-    // Seed from the stored row when there is one, otherwise from the incoming
-    // row: a freshly collected card has none, but a row coming back from a RAW
-    // import carries the provenance it was exported with.
-    const records = sourceRecords(existing || incoming);
-    let addedHit = false;
-    if (!isEmptyRecord(rec)) {
+    const records = sourceRecords(existing);
+    let addedHits = 0;
+    const add = candidate => {
+      const rec = cleanRecord(candidate);
+      if (isEmptyRecord(rec)) return;
       const seen = JSON.stringify(rec);
-      if (!records.some(x => JSON.stringify(cleanRecord(x)) === seen)) { records.push(rec); addedHit = true; }
-    }
+      if (records.some(x => JSON.stringify(cleanRecord(x)) === seen)) return;
+      records.push(rec);
+      addedHits++;
+    };
+    // A freshly collected card carries no provenance of its own and gets the
+    // query's; a row coming back from a RAW import carries the provenance it
+    // was exported with, and merging must keep both sides' history.
+    for (const own of sourceRecords(incoming)) add(own);
+    add(record);
     const base = existing || incoming;
     return {
       row: {
@@ -174,7 +180,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
         exclude_reason: '',
       },
       inserted: !existing,
-      addedHit,
+      addedHits,
     };
   };
 
@@ -1228,19 +1234,31 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
   const loadRawText = async (text,fileName) => {
     const x=parseRawCsv(text);
     await resetAuto();
-    // An import replaces the registry, as it always has: it exists to refilter
-    // a known RAW, not to blend two of them.
-    await store('clearRaw');
+    // Merges into the registry rather than replacing it, so RAW exported per
+    // district can be brought back together into one register. Dedupe is by
+    // place_id and provenance from both sides is kept, so importing the same
+    // file twice changes nothing. RESET BATCH stays the only action that
+    // destroys collected data.
+    const before=await storeTotals();
     for(let i=0;i<x.data.length;i+=STORE_PAGE)await store('putRaw',{records:x.data.slice(i,i+STORE_PAGE),record:null});
     const totals=await store('recount');
-    batch={...blankBatch(),status:BATCH.COMPLETED,fileName:fileName||'raw.csv',queue:x.queue,currentIndex:x.queue.length,completedQueries:x.queue.length,uniqueCount:totals.rawUnique,sourceHits:totals.rawSourceHits,startTime:Date.now(),lastProgressTime:Date.now()};
-    await persistBatch();blog('RAW imported',{fileName,rawUnique:totals.rawUnique,sourceHits:totals.rawSourceHits});
+    const queue=[...batch.queue];
+    for(const q of x.queue)if(!queue.some(e=>normalize(e.query)===normalize(q.query)&&normalize(e.district||'')===normalize(q.district||'')))queue.push(q);
+    batch={...blankBatch(),status:BATCH.COMPLETED,fileName:fileName||'raw.csv',queue,currentIndex:queue.length,completedQueries:queue.length,
+      uniqueCount:totals.rawUnique,sourceHits:totals.rawSourceHits,pendingDetail:0,startTime:Date.now(),lastProgressTime:Date.now()};
+    await persistBatch();
+    batch={...batch,...await storeTotals()};await persistBatch();
+    blog('RAW imported',{fileName,added:totals.rawUnique-before.uniqueCount,rawUnique:totals.rawUnique,sourceHits:totals.rawSourceHits});
   };
 
   const loadBatchText = async (text,fileName) => {
     const queue=parseBatchCsv(text); await resetAuto();
-    batch={...blankBatch(),status:BATCH.READY,fileName:fileName||'queries.csv',queue}; await persistBatch();
-    blog('CSV loaded',{fileName,queries:queue.length});
+    // The registry is not touched here - only the queue is replaced. Carrying
+    // the stored totals over keeps the panel from reading as if everything
+    // collected so far had just been thrown away.
+    batch={...blankBatch(),status:BATCH.READY,fileName:fileName||'queries.csv',queue,...await storeTotals()};
+    await persistBatch();
+    blog('CSV loaded',{fileName,queries:queue.length,rawKept:batch.uniqueCount});
   };
 
   const batchFatal = async e => {
@@ -1310,7 +1328,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     if(!batch.queue.length)throw new Error('Сначала загрузите CSV со списком запросов.');
     await resetAuto();
     const q=batch.queue.map((x,i)=>({...x,status:i===0?'RUNNING':'PENDING',uniqueFound:0,error:null}));
-    batch={...blankBatch(),status:BATCH.RUNNING,fileName:batch.fileName,queue:q,startTime:Date.now(),lastProgressTime:Date.now(),navAttempts:0};await persistBatch();blog('started',{queries:q.length,mode:'RAW_FIRST'});await runBatchCurrent();
+    batch={...blankBatch(),status:BATCH.RUNNING,fileName:batch.fileName,queue:q,startTime:Date.now(),lastProgressTime:Date.now(),navAttempts:0,...await storeTotals()};await persistBatch();blog('started',{queries:q.length,mode:'RAW_FIRST'});await runBatchCurrent();
   };
   const pauseBatch = async () => {if(batch.status!==BATCH.RUNNING)return;await patchBatch({status:BATCH.PAUSED});await pauseAuto();blog('paused',{currentIndex:batch.currentIndex});};
   const resumeBatch = async () => {if(![BATCH.PAUSED,BATCH.USER_ACTION_REQUIRED].includes(batch.status))return;await patchBatch({status:BATCH.RUNNING,error:null});blog('resumed',{currentIndex:batch.currentIndex});await runBatchCurrent();};
@@ -1604,6 +1622,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
         if(batch.finalCount)buttons+=btn(`EXPORT FINAL (${batch.finalCount})`,'batch-export-final');
       }
       if(!filterRunning)buttons+=btn(`RESET BATCH — УДАЛИТЬ RAW (${batch.uniqueCount})`,'batch-reset','color:#a16207');
+      buttons+=`<div style="margin-top:6px;font-size:11px;color:#555">Загрузка следующего CSV с запросами реестр не трогает — районы копятся в одном хранилище. Удаляет данные только RESET BATCH.</div>`;
     }
     return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v${esc(buildVersion())}</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
   };

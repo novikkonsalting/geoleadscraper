@@ -35,19 +35,25 @@
   // Merges one collected card into whatever is already stored under the same
   // key. The first version of a card wins on field values; source records
   // accumulate, so provenance survives an organisation being found by several
-  // queries. Returns the row to store plus whether a new source record was
-  // added, which the caller uses to keep the source-hits total exact.
+  // queries - and, when a RAW export is merged back in, by several runs.
+  // Returns the row to store plus how many new source records it gained, which
+  // the caller uses to keep the source-hits total exact.
   const mergeRecord = (existing, incoming, record) => {
-    const rec = cleanRecord(record);
-    // Seed from the stored row when there is one, otherwise from the incoming
-    // row: a freshly collected card has none, but a row coming back from a RAW
-    // import carries the provenance it was exported with.
-    const records = sourceRecords(existing || incoming);
-    let addedHit = false;
-    if (!isEmptyRecord(rec)) {
+    const records = sourceRecords(existing);
+    let addedHits = 0;
+    const add = candidate => {
+      const rec = cleanRecord(candidate);
+      if (isEmptyRecord(rec)) return;
       const seen = JSON.stringify(rec);
-      if (!records.some(x => JSON.stringify(cleanRecord(x)) === seen)) { records.push(rec); addedHit = true; }
-    }
+      if (records.some(x => JSON.stringify(cleanRecord(x)) === seen)) return;
+      records.push(rec);
+      addedHits++;
+    };
+    // A freshly collected card carries no provenance of its own and gets the
+    // query's; a row coming back from a RAW import carries the provenance it
+    // was exported with, and merging must keep both sides' history.
+    for (const own of sourceRecords(incoming)) add(own);
+    add(record);
     const base = existing || incoming;
     return {
       row: {
@@ -67,7 +73,7 @@
         exclude_reason: '',
       },
       inserted: !existing,
-      addedHit,
+      addedHits,
     };
   };
 

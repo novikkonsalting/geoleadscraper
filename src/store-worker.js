@@ -90,7 +90,7 @@
       const previous = pending.get(x.key) || existing[i];
       const merged = mergeRecord(previous, x.item, record);
       if (merged.inserted && !pending.has(x.key)) inserted++;
-      if (merged.addedHit) hits++;
+      hits += merged.addedHits;
       pending.set(x.key, merged.row);
     });
     totals.rawUnique += inserted;
