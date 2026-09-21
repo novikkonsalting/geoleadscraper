@@ -1483,7 +1483,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
       }
       if(!filterRunning)buttons+=btn(`RESET BATCH — УДАЛИТЬ RAW (${batch.uniqueCount})`,'batch-reset','color:#a16207');
     }
-    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.10.1</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
+    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.10.2</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
   };
 
   const render = () => {

@@ -23,6 +23,7 @@ Google Maps и 2GIS части проекта не затрагиваются: �
 | `tools/smoke-test.mjs` | Тесты хранилища, дедупа, CSV, координат, гео и миграции с v1.4.x. |
 | `tools/bench-store.mjs` | Замер старого (`chrome.storage`) и нового (IndexedDB) пути записи. |
 | `tools/browser-check.mjs` | Проверка перехватчика ответов в настоящем Chromium. |
+| `tools/extension-check.mjs` | Загружает собранное расширение в Chromium: имя, манифест, service worker, IndexedDB. |
 | `tools/embed-boundaries.mjs` | Генерирует встроенные границы из `data/uzao_districts.geojson`. |
 | `tools/fix-swapped-coords.mjs` | Чинит перевёрнутые latitude/longitude в уже выгруженном CSV. |
 | `data/uzao_districts.geojson` | Границы 12 районов ЮЗАО из OpenStreetMap (ODbL). |
@@ -40,6 +41,7 @@ node tools/geo-check.mjs       # качество встроенных гран�
 node tools/analyze-raw.mjs geoleadscraper-yandex_maps-RAW_ALL-*.csv
 node tools/bench-store.mjs 4000   # во что обходится запись датасета
 node tools/browser-check.mjs      # перехватчик ответов в настоящем Chromium
+node tools/extension-check.mjs    # расширение целиком в настоящем Chromium
 ```
 
 Перед первым прогоном тестов: `npm install` (единственная зависимость —

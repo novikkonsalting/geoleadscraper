@@ -1,0 +1,10 @@
+{
+  "extensionName": {
+    "description": "Extension name",
+    "message": "GeoLeadScraper"
+  },
+  "extensionDescription": {
+    "description": "Extension description",
+    "message": "Сбор справочника организаций из Яндекс Карт, Google Карт и 2ГИС: сначала полный RAW-реестр, затем локальная фильтрация по району и категории."
+  }
+}
