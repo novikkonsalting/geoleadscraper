@@ -61,6 +61,7 @@ export async function loadExtension({ withStore = false } = {}) {
   globalThis.chrome = {
     runtime: {
       getURL: p => p,
+      getManifest: () => JSON.parse(read('extension/manifest.json')),
       lastError: null,
       onMessage: { addListener: fn => listeners.push(fn) },
       // Mirrors Chrome closely enough to catch a handler that forgets to keep
@@ -101,6 +102,12 @@ export async function loadExtension({ withStore = false } = {}) {
       buildGeoCache, embeddedGeo,
       getListEntities: () => listEntities,
       getBatch: () => batch, getState: () => state, STORE_PAGE,
+      // The stall guard: a test drives it directly, because in Node its
+      // interval is neutralised along with the UI ticker.
+      watchdogTick, beat, CFG,
+      setState: s => { state = { ...state, ...s }; },
+      setHeartbeat: v => { heartbeat = v; },
+      setConfig: patch => Object.assign(CFG, patch),
     };\n`);
   if (!module_.includes('globalThis.__gls')) throw new Error('could not neutralise the module bootstrap for testing');
   // The module starts a 1s UI ticker at load time. Under Node that is a real

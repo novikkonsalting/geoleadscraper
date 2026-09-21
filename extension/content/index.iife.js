@@ -310,6 +310,16 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     STAGNANT_REQUIRED: 2,
     BATCH_PAGE_SETTLE_MS: 1250,
     LOW_YIELD_UNIQUE: 15,
+    // Deadlines. Every await inside the collection loop must have one: an
+    // unbounded wait is indistinguishable from a healthy slow page, and the
+    // safety timeout above lives inside the very loop that stops running.
+    STORE_TIMEOUT_MS: 20000,
+    STORE_ATTEMPTS: 3,
+    CARD_FETCH_TIMEOUT_MS: 45000,
+    // How long the loop may go without finishing a single cycle before the
+    // watchdog rules it hung. A cycle costs seconds, so minutes mean stuck.
+    STALL_LIMIT_MS: 150000,
+    WATCHDOG_TICK_MS: 15000,
     // Yandex rewrites some queries ("фастфуд" becomes "фаст фуд"). Retrying
     // navigation forever because the page shows a different string is how a
     // batch turns into an endless reload loop.
@@ -378,11 +388,27 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
   let acceptedKeys = new Set();
   let runToken = 0;
   let loopPromise = null;
+  let loopGeneration = 0;
+  let watchdogTimer = null;
   let batchAdvancing = false;
   let autoPersistTimer = null;
   let autoPersistInFlight = Promise.resolve();
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // A promise that cannot outlive its deadline. Used for the one await in
+  // the loop that reaches the network and therefore answers to Yandex, not
+  // to us.
+  const withTimeout = (promise, ms, message) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
+  });
+  // Proof that the collector is alive, stamped wherever it does real work.
+  // The watchdog reads it; nothing else may.
+  let heartbeat = 0;
+  const beat = () => { heartbeat = Date.now(); };
+  // Read, never written by hand: a hardcoded version in the panel is how
+  // you end up debugging a build the browser is not running.
+  const buildVersion = () => { try { return chrome.runtime.getManifest().version; } catch { return '?'; } };
   const log = (msg, data) => console.log(`[AUTO] ${msg}`, data || '');
   const blog = (msg, data) => console.log(`[BATCH] ${msg}`, data || '');
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
@@ -398,14 +424,40 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
   // no longer rides inside the chrome.storage snapshot, so a write costs one
   // record instead of the whole registry.
   const STORE_PAGE = 500;
-  const store = (op, payload) => new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({type:'GLS_STORE', op, payload: payload || {}}, response => {
-      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-      if (!response) return reject(new Error('Хранилище не ответило. Перезагрузите расширение.'));
-      if (!response.ok) return reject(new Error(response.error || 'Ошибка хранилища.'));
-      resolve(response.data);
-    });
+  // Manifest V3 evicts an idle service worker, and a message that reaches a
+  // worker on its way out can leave the callback that never fires. Without a
+  // deadline here that lost message parks the collector inside an await for
+  // good: no error, no timeout, a query that simply stops.
+  const askStore = (op, payload) => new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = fn => v => { if (settled) return; settled = true; clearTimeout(timer); fn(v); };
+    const ok = finish(resolve), fail = finish(reject);
+    const timer = setTimeout(
+      () => fail(new Error(`Хранилище не ответило за ${Math.round(CFG.STORE_TIMEOUT_MS/1000)} с (${op}).`)),
+      CFG.STORE_TIMEOUT_MS);
+    try {
+      chrome.runtime.sendMessage({type:'GLS_STORE', op, payload: payload || {}}, response => {
+        if (chrome.runtime.lastError) return fail(new Error(chrome.runtime.lastError.message));
+        if (!response) return fail(new Error('Хранилище не ответило. Перезагрузите расширение.'));
+        if (!response.ok) return fail(new Error(response.error || 'Ошибка хранилища.'));
+        ok(response.data);
+      });
+    } catch (e) { fail(e instanceof Error ? e : new Error(String(e))); }
   });
+  // Every store operation is keyed and idempotent - reads return the same row,
+  // writes merge on the same key - so a retry can only repeat work, never
+  // corrupt the registry. A woken worker answers the second attempt.
+  const store = async (op, payload) => {
+    let last = null;
+    for (let attempt = 1; attempt <= CFG.STORE_ATTEMPTS; attempt++) {
+      try { return await askStore(op, payload); }
+      catch (e) {
+        last = e;
+        if (attempt < CFG.STORE_ATTEMPTS) { log('store retry', {op, attempt, error: e?.message || String(e)}); await sleep(400 * attempt); }
+      }
+    }
+    throw last;
+  };
   // ---- fast path ---------------------------------------------------------
   // Organisations read out of data Yandex Maps already loaded for itself: the
   // state-view script embedded in the search page, plus the JSON the SPA
@@ -794,6 +846,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     const urls = orgUrls(container), candidates = urls.length ? urls : orgUrls(document);
     const stats = {candidateUrls:candidates.length,newUrls:0,repeatedUrls:0,acceptedUnique:0,duplicateItems:0,fastSkipped:0,cacheReused:0,fromList:0,rejected:0};
     for (const url of candidates) {
+      beat();
       if (token !== runToken || state.status !== AUTO.RUNNING) return stats;
       const pidFromUrl=placeIdFromUrl(url);
       if(seenUrls.has(url)){stats.repeatedUrls++;continue;}
@@ -822,7 +875,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
         await patchAuto({fromList:state.fromList+1});
       }
       else{
-        try{item=await parser(url,{extractWebsites:false});}catch{item=null;}
+        try{item=await withTimeout(Promise.resolve(parser(url,{extractWebsites:false})),CFG.CARD_FETCH_TIMEOUT_MS,`Карточка не ответила за ${Math.round(CFG.CARD_FETCH_TIMEOUT_MS/1000)} с.`);}catch{item=null;}
         if(token!==runToken||state.status!==AUTO.RUNNING)return stats;
         if(!item)continue;
         fromCache=false;detailLevel='CARD';
@@ -867,7 +920,10 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     // recommendation payloads, which were never part of this result list, so
     // that comparison flagged healthy runs as incomplete.
     const cutOff = String(reason||'').includes('safety timeout');
-    const warning = neverScrolled
+    const stalled = String(reason||'').includes('watchdog');
+    const warning = stalled
+      ? `Сбор по этому запросу завис и был закрыт сторожевым таймером после ${state.uniqueCount} карточек. Выдача могла закончиться не полностью - повторите запрос, если нужна гарантия полноты.`
+      : neverScrolled
       ? `Сбор завершился после ${state.uniqueCount} карточек, но список выдачи ни разу не прокрутился. Результат почти наверняка неполный: проверьте, что открыт список результатов Яндекс Карт, и повторите запрос.`
       : cutOff
         ? `Запрос остановлен по защитному таймауту после ${state.uniqueCount} карточек, выдача могла закончиться не полностью. Повторите запрос, если нужна гарантия полноты.`
@@ -890,6 +946,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     let stagnant = 0, repeatedKnown = 0;
     await collectVisible(container, token);
     while (token === runToken) {
+      beat();
       if (state.status === AUTO.PAUSED) { await sleep(300); continue; }
       if (state.status !== AUTO.RUNNING) return;
       if (challenged()) return requireAction();
@@ -947,19 +1004,43 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     }
   };
 
+  const failRun = async message => {
+    await patchAuto({status:AUTO.ERROR,error:message},true);
+    log('error', message);
+    if (batch.status === BATCH.RUNNING) {
+      const q = [...batch.queue], current=q[batch.currentIndex];
+      if (current) q[batch.currentIndex] = {...current,status:'ERROR',error:state.error,uniqueFound:state.uniqueCount};
+      await patchBatch({...await storeTotals(),status:BATCH.ERROR,error:state.error,queue:q,failedQueries:batch.failedQueries+1});
+    }
+  };
+
   const ensureLoop = () => {
     if (loopPromise) return;
-    const token = runToken;
+    const token = runToken, generation = ++loopGeneration;
+    beat();
     loopPromise = runLoop(token).catch(async e => {
       if (token !== runToken) return;
-      await patchAuto({status:AUTO.ERROR,error:e?.message || String(e)},true);
-      log('error', e?.message || e);
-      if (batch.status === BATCH.RUNNING) {
-        const q = [...batch.queue], current=q[batch.currentIndex];
-        if (current) q[batch.currentIndex] = {...current,status:'ERROR',error:state.error,uniqueFound:state.uniqueCount};
-        await patchBatch({...await storeTotals(),status:BATCH.ERROR,error:state.error,queue:q,failedQueries:batch.failedQueries+1});
-      }
-    }).finally(() => { loopPromise = null; });
+      await failRun(e?.message || String(e));
+      // Only the loop that is still the current one may clear the slot. A loop
+      // the watchdog gave up on can come back to life at any time, and must not
+      // then pull the running one out from under itself.
+    }).finally(() => { if (generation === loopGeneration) loopPromise = null; });
+  };
+
+  // Every wait inside the loop now has a deadline, but a deadline can only
+  // cover a wait we know about. This covers the rest: if no cycle and no card
+  // has been touched for minutes, the run is hung, and a hung run that reports
+  // "работает" forever is the worst outcome of all - it costs a whole night.
+  const watchdogTick = async () => {
+    if (state.status !== AUTO.RUNNING || !heartbeat) return;
+    const stalledFor = Date.now() - heartbeat;
+    if (stalledFor < CFG.STALL_LIMIT_MS) return;
+    // Abandon the parked loop: a new token makes anything it still writes a
+    // no-op, and a new generation keeps its finally() from freeing the slot.
+    runToken++; loopGeneration++; loopPromise = null; beat();
+    log('watchdog: collection loop stalled', {unique:state.uniqueCount, stalledFor, query:state.currentSearchQuery});
+    if (state.uniqueCount > 0) { await complete('watchdog stall'); return; }
+    await failRun(`Сбор завис: за ${Math.round(stalledFor/1000)} с не выполнено ни одного цикла и не собрано ни одной организации. Перезагрузите страницу; если повторяется - перезагрузите расширение на chrome://extensions.`);
   };
 
   const startAuto = async (queueItem=null) => {
@@ -1428,6 +1509,11 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
           `</div>`;
         if(running){
           progress+=`<div style="display:flex;justify-content:space-between;gap:8px;margin-top:7px;font-size:11px"><span>Проверка завершения выдачи</span><b>${state.noProgressCycles} / ${CFG.NO_PROGRESS_LIMIT}</b></div>${bar(endPct)}`;
+          // "работает" is a status; this is evidence. A frozen collector used to
+          // look exactly like a slow one from here.
+          const quiet=heartbeat?Date.now()-heartbeat:null;
+          const alarm=quiet!=null&&quiet>CFG.STALL_LIMIT_MS/2;
+          progress+=`<div style="display:flex;justify-content:space-between;gap:8px;margin-top:7px;font-size:11px"><span>Цикл сбора</span><b${alarm?' style="color:#b91c1c"':''}>${quiet==null?'—':fmtMs(quiet)+' назад'}</b></div>`;
         }
         progress+='</div>';
       }
@@ -1483,7 +1569,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
       }
       if(!filterRunning)buttons+=btn(`RESET BATCH — УДАЛИТЬ RAW (${batch.uniqueCount})`,'batch-reset','color:#a16207');
     }
-    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.10.2</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
+    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v${esc(buildVersion())}</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
   };
 
   const render = () => {
@@ -1577,7 +1663,8 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
 
   const mount=()=>{render();if(!getPanel())setTimeout(mount,400);};
   const uiTicker=setInterval(()=>{if([BATCH.RUNNING,BATCH.PAUSED,BATCH.USER_ACTION_REQUIRED].includes(batch.status)||state.status===AUTO.RUNNING)render();},1000);
-  window.addEventListener('unload',()=>clearInterval(uiTicker),{once:true});
+  watchdogTimer=setInterval(()=>{void watchdogTick().catch(e=>console.warn('[AUTO] watchdog failed',e));},CFG.WATCHDOG_TICK_MS);
+  window.addEventListener('unload',()=>{clearInterval(uiTicker);clearInterval(watchdogTimer);},{once:true});
   const mo=new MutationObserver(()=>{if(!getPanel())render();});mo.observe(document.documentElement,{subtree:true,childList:true});
   injectPageHook();
   setTimeout(()=>{const seeded=seedFromDocument();if(seeded)log('seeded from page state-view',{entities:seeded});},800);

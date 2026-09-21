@@ -12,6 +12,11 @@ const check = (name, cond, detail = '') => {
   else { failures++; console.log(`FAIL ${name} ${detail}`); }
 };
 const section = name => console.log(`\n-- ${name}`);
+// Fails loudly instead of hanging the test run when a promise never settles.
+const api_race = (promise, ms) => Promise.race([
+  promise,
+  new Promise((_, reject) => setTimeout(() => reject(new Error(`did not settle within ${ms}ms`)), ms).unref?.()),
+]);
 
 const RAW_HEADER = 'source_district,source_group,source_category,title,address,phone,website,maps_url,source,source_query,source_queries_count,source_records,place_id,categories,rating,review_count,latitude,longitude';
 const rawRow = (placeId, query, category, lat = '55.687149', lon = '37.572078', title = 'Штолле') =>
@@ -436,6 +441,57 @@ check('totals in the snapshot match the store', snapshot.uniqueCount === 4 && sn
 
 await legacy.api.restore();
 check('a second restore does not duplicate anything', (await legacy.api.storeTotals()).uniqueCount === 4);
+
+// --- a run that cannot finish ----------------------------------------------
+// The failure this covers: on a real 132-query batch the collector stopped
+// after 44 organisations and sat at "работает" for an hour. Nothing threw,
+// nothing timed out - a message to the service worker was never answered, and
+// every check that would have ended the query lives inside the loop that was
+// parked on that await.
+section('a stalled run ends instead of waiting forever');
+{
+  const stall = await loadExtension({ withStore: true });
+  stall.api.setConfig({ STORE_TIMEOUT_MS: 60, STORE_ATTEMPTS: 3, STALL_LIMIT_MS: 1000 });
+
+  // A service worker that accepts the message, keeps the port open and never
+  // answers - exactly what an evicted MV3 worker looks like from the page.
+  const realSend = globalThis.chrome.runtime.sendMessage;
+  let attempts = 0;
+  globalThis.chrome.runtime.sendMessage = () => { attempts++; };
+  const started = Date.now();
+  let rejected = null;
+  try { await api_race(stall.api.store('stats'), 5000); } catch (e) { rejected = e; }
+  globalThis.chrome.runtime.sendMessage = realSend;
+
+  check('a store call that is never answered rejects instead of hanging',
+    rejected instanceof Error && /Хранилище не ответило за/.test(rejected.message), String(rejected));
+  check('it is retried before giving up, so a woken worker still answers',
+    attempts === 3, `attempts=${attempts}`);
+  check('giving up takes the configured deadline, not forever',
+    Date.now() - started < 4000, `${Date.now() - started}ms`);
+
+  // The watchdog: the loop is parked, so only something outside it can notice.
+  stall.api.setState({ status: 'RUNNING', uniqueCount: 44, currentSearchQuery: 'рестораны Гагаринский район Москва' });
+  stall.api.setHeartbeat(Date.now() - 10 * 60 * 1000);
+  await stall.api.watchdogTick();
+  const after = stall.api.getState();
+  check('a loop that has not turned for minutes is closed by the watchdog',
+    after.status === 'COMPLETED', after.status);
+  check('the 44 organisations already collected are kept, and the query is flagged, not silently trusted',
+    after.uniqueCount === 44 && /завис/.test(after.warning || ''), after.warning);
+
+  stall.api.setState({ status: 'RUNNING', uniqueCount: 0, warning: null, error: null });
+  stall.api.setHeartbeat(Date.now() - 10 * 60 * 1000);
+  await stall.api.watchdogTick();
+  check('a stall with nothing collected is reported as an error, not as a finished query',
+    stall.api.getState().status === 'ERROR' && /завис/.test(stall.api.getState().error || ''),
+    stall.api.getState().error);
+
+  stall.api.setState({ status: 'RUNNING', error: null });
+  stall.api.beat();
+  await stall.api.watchdogTick();
+  check('a collector that is working is left alone', stall.api.getState().status === 'RUNNING');
+}
 
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);
 process.exit(failures ? 1 : 0);

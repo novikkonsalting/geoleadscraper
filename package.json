@@ -1,6 +1,6 @@
 {
   "name": "geoleadscraper",
-  "version": "1.10.2",
+  "version": "1.10.3",
   "private": true,
   "type": "module",
   "description": "GeoLeadScraper — Yandex Maps AUTO + BATCH, RAW-first collection with an offline district filter.",

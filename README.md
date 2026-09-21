@@ -1,4 +1,4 @@
-# GeoLeadScraper — Yandex Maps AUTO + BATCH (v1.10.0)
+# GeoLeadScraper — Yandex Maps AUTO + BATCH (v1.10.3)
 
 Сбор справочника организаций ЮЗАО Москвы по схеме **COLLECT RAW → LOCAL FILTER → FINAL**.
 
