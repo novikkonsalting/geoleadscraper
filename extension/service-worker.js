@@ -92,7 +92,7 @@ var R={exports:{}},X=R.exports,j;function V(){return j||(j=1,(function(s,r){(fun
 // so MV3 shutting it down mid-run is harmless.
 ;(() => {
   const DB_NAME = 'geoleadscraper';
-  const DB_VERSION = 2;
+  const DB_VERSION = 3;
   const RAW = 'raw', FINAL = 'final', META = 'meta';
   const TOTALS = 'totals';
   const { stableKey, mergeRecord, sourceRecords } = globalThis.GLSRecord;
@@ -113,6 +113,10 @@ var R={exports:{}},X=R.exports,j;function V(){return j||(j=1,(function(s,r){(fun
         // index existed carry no detail_level, so they are absent from it -
         // which is correct: they were all full card fetches.
         if (!raw.indexNames.contains('detail_level')) raw.createIndex('detail_level', 'detail_level', { unique: false });
+        // Rows the local filter either accepted or could not decide on. These
+        // are the ones worth spending a card fetch on; the flag is cleared when
+        // the card arrives, so the index drains as the pass runs.
+        if (!raw.indexNames.contains('enrich_priority')) raw.createIndex('enrich_priority', 'enrich_priority', { unique: false });
         if (!db.objectStoreNames.contains(FINAL)) db.createObjectStore(FINAL, { keyPath: 'key' });
         if (!db.objectStoreNames.contains(META)) db.createObjectStore(META, { keyPath: 'id' });
       };
@@ -228,6 +232,7 @@ var R={exports:{}},X=R.exports,j;function V(){return j||(j=1,(function(s,r){(fun
         next[field] = value;
       }
       next.detail_level = x.detailLevel || 'CARD';
+      delete next.enrich_priority;
       rows.push(next);
     });
     await Promise.all(rows.map(row => promise(raw.put(row))));
@@ -236,6 +241,23 @@ var R={exports:{}},X=R.exports,j;function V(){return j||(j=1,(function(s,r){(fun
   };
 
   const countPendingDetail = store => promise(store.index('detail_level').count('LIST')).catch(() => 0);
+  const countPendingPriority = store => promise(store.index('enrich_priority').count(1)).catch(() => 0);
+
+  // Marks the rows the filter cares about, so the enrichment pass can fetch
+  // those instead of the whole registry.
+  const flagForEnrich = async ({ keys }) => {
+    const wanted = (keys || []).filter(Boolean);
+    if (!wanted.length) return { flagged: 0 };
+    const db = await openDb();
+    const tx = db.transaction(RAW, 'readwrite');
+    const raw = tx.objectStore(RAW);
+    const existing = await Promise.all(wanted.map(key => promise(raw.get(key))));
+    const rows = existing.filter(row => row && row.detail_level === 'LIST' && row.enrich_priority !== 1)
+      .map(row => ({ ...row, enrich_priority: 1 }));
+    await Promise.all(rows.map(row => promise(raw.put(row))));
+    await done(tx);
+    return { flagged: rows.length };
+  };
 
   const putFinal = async ({ records }) => {
     const db = await openDb();
@@ -289,12 +311,14 @@ var R={exports:{}},X=R.exports,j;function V(){return j||(j=1,(function(s,r){(fun
   const stats = async () => {
     const db = await openDb();
     const tx = db.transaction([META, RAW], 'readonly');
-    const [totals, pendingDetail] = await Promise.all([
+    const raw = tx.objectStore(RAW);
+    const [totals, pendingDetail, pendingPriority] = await Promise.all([
       readTotals(tx.objectStore(META)),
-      countPendingDetail(tx.objectStore(RAW)),
+      countPendingDetail(raw),
+      countPendingPriority(raw),
     ]);
     await done(tx);
-    return { rawUnique: totals.rawUnique, rawSourceHits: totals.rawSourceHits, finalCount: totals.finalCount, pendingDetail };
+    return { rawUnique: totals.rawUnique, rawSourceHits: totals.rawSourceHits, finalCount: totals.finalCount, pendingDetail, pendingPriority };
   };
 
   // Pages over the rows still waiting for a card fetch. Driven off the index,
@@ -307,25 +331,16 @@ var R={exports:{}},X=R.exports,j;function V(){return j||(j=1,(function(s,r){(fun
     return rows || [];
   };
 
-  // The same queue, narrowed to organisations that survived the local filter.
-  // RAW-first makes this possible: the registry is classified before any card
-  // is fetched, so the expensive pass can be limited to the rows that will
-  // actually end up in the final register.
+  // The same queue, narrowed to what the local filter flagged: organisations it
+  // accepted, plus the ones it could not decide on because the list entry was
+  // too thin. RAW-first makes this possible - the registry is classified before
+  // any card is fetched, so the expensive pass goes only where it matters.
   const listPendingDetailFinal = async ({ limit = 200 }) => {
     const db = await openDb();
-    const tx = db.transaction([FINAL, RAW], 'readonly');
-    const finalKeys = await promise(tx.objectStore(FINAL).getAllKeys());
-    const raw = tx.objectStore(RAW);
-    const rows = [];
-    for (let i = 0; i < finalKeys.length && rows.length < limit; i += 200) {
-      const slice = finalKeys.slice(i, i + 200);
-      const found = await Promise.all(slice.map(key => promise(raw.get(key))));
-      for (const row of found) {
-        if (row?.detail_level === 'LIST' && rows.length < limit) rows.push(row);
-      }
-    }
+    const tx = db.transaction(RAW, 'readonly');
+    const rows = await promise(tx.objectStore(RAW).index('enrich_priority').getAll(1, limit));
     await done(tx);
-    return rows;
+    return (rows || []).filter(row => row.detail_level === 'LIST');
   };
 
   const OPS = {
@@ -335,6 +350,7 @@ var R={exports:{}},X=R.exports,j;function V(){return j||(j=1,(function(s,r){(fun
     listFinal: args => page(FINAL, args || {}),
     putFinal,
     enrichRaw,
+    flagForEnrich,
     listPendingDetail,
     listPendingDetailFinal,
     clearRaw: () => clearStores([RAW, FINAL]),

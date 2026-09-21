@@ -112,37 +112,41 @@ check('missing coordinates are NO_COORDINATES', noCoords.valid === false && noCo
 check('the bundled outlines claim no square metre twice',
   geo.quality.ambiguousPercent === 0, `${geo.quality.ambiguousPercent}%`);
 
-// The bundled outlines no longer overlap, so the tie-break is exercised against
-// a deliberately broken imported set - it exists to protect whatever boundary
-// file a user loads, not the shipped one.
+// The shipped outlines do not overlap, so the tie-break is exercised against a
+// deliberately broken set. It is insurance for a future regeneration of the
+// boundaries, not something the current data needs.
 const { readFileSync } = await import('node:fs');
 const boundaries = JSON.parse(readFileSync(new URL('../data/uzao_districts.geojson', import.meta.url), 'utf8'));
 const deep = { lat: 55.6577, lon: 37.5925 }; // deep inside Зюзино
 check('the probe point belongs to exactly one district before we break anything',
   (await api.detectGeoDistrict({ latitude: deep.lat, longitude: deep.lon })).quality === 'EXACT');
-const broken = structuredClone(boundaries);
-const cheremushki = broken.features.find(f => f.properties.name === 'Черёмушки');
-const d = 0.004;
-cheremushki.geometry = { type: 'MultiPolygon', coordinates: [
-  cheremushki.geometry.type === 'Polygon' ? cheremushki.geometry.coordinates : cheremushki.geometry.coordinates[0],
-  [[[deep.lon - d, deep.lat - d], [deep.lon + d, deep.lat - d], [deep.lon + d, deep.lat + d], [deep.lon - d, deep.lat + d], [deep.lon - d, deep.lat - d]]],
-] };
-await api.importGeoJsonText(JSON.stringify(broken), 'broken.geojson');
-const imported = await api.ensureGeo();
-check('an imported boundary set replaces the bundled one', imported.source.startsWith('file:'), imported.source);
-check('its overlap is measured and reported, not silently accepted',
-  imported.quality.ambiguousPercent > 0, `${imported.quality.ambiguousPercent}%`);
+{
+  const geometries = {}, bounds = {};
+  for (const f of boundaries.features) {
+    geometries[f.properties.name] = f.geometry;
+    let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+    const walk = v => { if (typeof v[0] === 'number') { mnx = Math.min(mnx, v[0]); mxx = Math.max(mxx, v[0]); mny = Math.min(mny, v[1]); mxy = Math.max(mxy, v[1]); } else v.forEach(walk); };
+    walk(f.geometry.coordinates);
+    bounds[f.properties.name] = { minLon: mnx, maxLon: mxx, minLat: mny, maxLat: mxy };
+  }
+  const d = 0.004;
+  const patch = [[[deep.lon - d, deep.lat - d], [deep.lon + d, deep.lat - d], [deep.lon + d, deep.lat + d], [deep.lon - d, deep.lat + d], [deep.lon - d, deep.lat - d]]];
+  const ch = geometries['Черёмушки'];
+  geometries['Черёмушки'] = { type: 'MultiPolygon', coordinates: [ch.type === 'Polygon' ? ch.coordinates : ch.coordinates[0], patch] };
+  bounds['Черёмушки'] = { minLon: Math.min(bounds['Черёмушки'].minLon, deep.lon - d), maxLon: Math.max(bounds['Черёмушки'].maxLon, deep.lon + d), minLat: Math.min(bounds['Черёмушки'].minLat, deep.lat - d), maxLat: Math.max(bounds['Черёмушки'].maxLat, deep.lat + d) };
+  api.setGeoCache(api.buildGeoCache(geometries, bounds, 'test:overlapping'));
+}
+const brokenGeo = await api.ensureGeo();
+check('overlap in a boundary set is measured, not silently accepted',
+  brokenGeo.quality.ambiguousPercent > 0, `${brokenGeo.quality.ambiguousPercent}%`);
 const overlap = await api.detectGeoDistrict({ latitude: deep.lat, longitude: deep.lon });
 check('overlapping outlines resolve to one district instead of dropping the org',
   overlap.district !== null && overlap.quality === 'AMBIGUOUS' && overlap.candidates.length > 1, JSON.stringify(overlap));
 check('the tie-break picks the district the point sits deepest inside',
   overlap.district === 'Зюзино', overlap.district);
-await api.resetGeoToEmbedded();
-check('reverting restores the bundled outlines',
-  (await api.ensureGeo()).source.startsWith('embedded:'));
-check('a boundary file missing districts is refused',
-  await api.importGeoJsonText(JSON.stringify({ type: 'FeatureCollection', features: boundaries.features.slice(0, 3) }), 'short.geojson')
-    .then(() => false, e => /Не найдены|sanity/.test(e.message)));
+api.setGeoCache(api.embeddedGeo());
+check('the bundled outlines are restored', (await api.ensureGeo()).source.startsWith('embedded:'));
+
 check('a point outside ЮЗАО is OUTSIDE', (await api.detectGeoDistrict({ latitude: 55.9, longitude: 37.4 })).district === null);
 const swapped = api.normalizeCoords({ latitude: 37.572078, longitude: 55.687149 });
 check('legacy swapped lat/lon is repaired', Math.round(swapped.latitude * 1e4) === 556871 && swapped._coords_swapped === true);
@@ -254,25 +258,42 @@ check('enrichment finished cleanly', fast.api.getBatch().enrichStatus === 'COMPL
 await fast.api.enrichCards();
 check('re-running with nothing pending is a no-op', fast.api.getBatch().enrichStats.total === 0);
 
-// Filtering before enriching is the point: the expensive pass can then be
-// limited to the organisations that actually made it into the register.
+// Filtering before enriching is the point: the expensive pass then goes only
+// where it matters. Crucially, a row the filter could not decide on because its
+// list entry was too thin must be queued for a card - not thrown away, which is
+// how "Батони" was lost from a real Академический run.
 await fast.api.store('clearRaw');
 await fast.api.store('putRaw', {
   records: [
-    { place_id: '6000001', title: 'Принят', maps_url: 'https://yandex.ru/maps/org/a/6000001/', detail_level: 'LIST' },
-    { place_id: '6000002', title: 'Отсеян', maps_url: 'https://yandex.ru/maps/org/b/6000002/', detail_level: 'LIST' },
+    { place_id: '6000001', title: 'Принят', maps_url: 'https://yandex.ru/maps/org/a/6000001/', detail_level: 'LIST',
+      categories: 'Ресторан, бар', latitude: 55.687149, longitude: 37.572078 },
+    { place_id: '6000002', title: 'Другой район', maps_url: 'https://yandex.ru/maps/org/b/6000002/', detail_level: 'LIST',
+      categories: 'Ресторан', latitude: 55.691872, longitude: 37.561413 },
+    { place_id: '6000003', title: 'Батони', maps_url: 'https://yandex.ru/maps/org/c/6000003/', detail_level: 'LIST',
+      categories: '', latitude: 55.688449, longitude: 37.573502 },
   ],
-  record: { district: 'Академический', group: 'Общепит', category: 'Ресторан', query: 'q1' },
+  record: { district: 'Академический', group: 'Общепит', category: 'Ресторан', query: 'рестораны Академический район Москва' },
 });
-await fast.api.store('putFinal', { records: [{ key: 'id:6000001', place_id: '6000001', final_status: 'ACCEPTED' }] });
-check('both rows are waiting for a card', (await fast.api.storeTotals()).pendingDetail === 2);
+await fast.api.filterBatch();
+const fs2 = fast.api.getBatch().filterStats;
+check('the organisation in the district is accepted', fs2.accepted === 1, JSON.stringify(fs2));
+check('the one in another district is rejected on geography', fs2.rejectedDistrict === 1, JSON.stringify(fs2));
+check('a thin list entry is counted as needing a card, not as a wrong category',
+  fs2.needsCard === 1 && fs2.rejectedCategory === 0, JSON.stringify(fs2));
+check('accepted and undecided rows are queued for the card pass, the rejected one is not',
+  (await fast.api.storeTotals()).pendingPriority === 2, JSON.stringify(await fast.api.storeTotals()));
+
 const fetched = [];
-fast.setCardFetcher(async url => { fetched.push(url); return { phone: '+70000000000' }; });
+fast.setCardFetcher(async url => { fetched.push(url); return { phone: '+70000000000', categories: 'Ресторан' }; });
 await fast.api.enrichCards('final');
-check('the FINAL-only pass fetches just the accepted organisation',
-  fetched.length === 1 && fetched[0].includes('6000001'), JSON.stringify(fetched));
-check('the rejected row is left untouched for later',
-  (await fast.api.storeTotals()).pendingDetail === 1);
+check('the pass fetches exactly the two flagged rows',
+  fetched.length === 2 && !fetched.some(u => u.includes('6000002')), JSON.stringify(fetched));
+check('the queue is empty afterwards', (await fast.api.storeTotals()).pendingPriority === 0);
+const batoni = await fast.api.store('getRawByPlaceId', { place_id: '6000003' });
+check('the thin row now has its category', batoni.categories === 'Ресторан' && batoni.detail_level === 'CARD');
+await fast.api.filterBatch();
+check('re-filtering after the card pass recovers the organisation that was undecidable',
+  fast.api.getBatch().filterStats.accepted === 2, JSON.stringify(fast.api.getBatch().filterStats));
 
 // Stopping has to take effect immediately and leave the rest resumable.
 await fast.api.store('putRaw', {
