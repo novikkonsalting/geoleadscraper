@@ -86,6 +86,7 @@ export async function loadExtension({ withStore = false } = {}) {
       placeIdFromUrl, ensureGeo, evaluateItem, store, storeTotals, eachStored,
       loadRawText, filterBatch, resetBatch, restore, migrateLegacyDataset,
       enrichCards, stopEnrich, seedFromDocument, rememberEntities,
+      importGeoJsonText, resetGeoToEmbedded,
       getListEntities: () => listEntities,
       getBatch: () => batch, getState: () => state, STORE_PAGE,
     };\n`);

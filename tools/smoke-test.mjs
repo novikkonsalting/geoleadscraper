@@ -109,9 +109,40 @@ const probe = await api.detectGeoDistrict({ latitude: 55.6875, longitude: 37.573
 check('regression probe -> Академический', probe.district === 'Академический' && probe.quality === 'EXACT', JSON.stringify(probe));
 const noCoords = await api.detectGeoDistrict({ latitude: '', longitude: '' });
 check('missing coordinates are NO_COORDINATES', noCoords.valid === false && noCoords.quality === 'NO_COORDINATES');
-const overlap = await api.detectGeoDistrict({ latitude: 55.6062, longitude: 37.5337 });
+check('the bundled outlines claim no square metre twice',
+  geo.quality.ambiguousPercent === 0, `${geo.quality.ambiguousPercent}%`);
+
+// The bundled outlines no longer overlap, so the tie-break is exercised against
+// a deliberately broken imported set - it exists to protect whatever boundary
+// file a user loads, not the shipped one.
+const { readFileSync } = await import('node:fs');
+const boundaries = JSON.parse(readFileSync(new URL('../data/uzao_districts.geojson', import.meta.url), 'utf8'));
+const deep = { lat: 55.6577, lon: 37.5925 }; // deep inside Зюзино
+check('the probe point belongs to exactly one district before we break anything',
+  (await api.detectGeoDistrict({ latitude: deep.lat, longitude: deep.lon })).quality === 'EXACT');
+const broken = structuredClone(boundaries);
+const cheremushki = broken.features.find(f => f.properties.name === 'Черёмушки');
+const d = 0.004;
+cheremushki.geometry = { type: 'MultiPolygon', coordinates: [
+  cheremushki.geometry.type === 'Polygon' ? cheremushki.geometry.coordinates : cheremushki.geometry.coordinates[0],
+  [[[deep.lon - d, deep.lat - d], [deep.lon + d, deep.lat - d], [deep.lon + d, deep.lat + d], [deep.lon - d, deep.lat + d], [deep.lon - d, deep.lat - d]]],
+] };
+await api.importGeoJsonText(JSON.stringify(broken), 'broken.geojson');
+const imported = await api.ensureGeo();
+check('an imported boundary set replaces the bundled one', imported.source.startsWith('file:'), imported.source);
+check('its overlap is measured and reported, not silently accepted',
+  imported.quality.ambiguousPercent > 0, `${imported.quality.ambiguousPercent}%`);
+const overlap = await api.detectGeoDistrict({ latitude: deep.lat, longitude: deep.lon });
 check('overlapping outlines resolve to one district instead of dropping the org',
   overlap.district !== null && overlap.quality === 'AMBIGUOUS' && overlap.candidates.length > 1, JSON.stringify(overlap));
+check('the tie-break picks the district the point sits deepest inside',
+  overlap.district === 'Зюзино', overlap.district);
+await api.resetGeoToEmbedded();
+check('reverting restores the bundled outlines',
+  (await api.ensureGeo()).source.startsWith('embedded:'));
+check('a boundary file missing districts is refused',
+  await api.importGeoJsonText(JSON.stringify({ type: 'FeatureCollection', features: boundaries.features.slice(0, 3) }), 'short.geojson')
+    .then(() => false, e => /Не найдены|sanity/.test(e.message)));
 check('a point outside ЮЗАО is OUTSIDE', (await api.detectGeoDistrict({ latitude: 55.9, longitude: 37.4 })).district === null);
 const swapped = api.normalizeCoords({ latitude: 37.572078, longitude: 55.687149 });
 check('legacy swapped lat/lon is repaired', Math.round(swapped.latitude * 1e4) === 556871 && swapped._coords_swapped === true);

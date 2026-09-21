@@ -11,38 +11,23 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DISTRICTS = ['Академический','Гагаринский','Зюзино','Коньково','Котловка','Ломоносовский','Обручевский','Северное Бутово','Тёплый Стан','Черёмушки','Южное Бутово','Ясенево'];
 
-// Official district areas (km2), used only as an order-of-magnitude sanity check.
-const OFFICIAL_AREA = {
-  'Академический':5.6,'Гагаринский':7.5,'Зюзино':7.8,'Коньково':7.7,'Котловка':4.0,
-  'Ломоносовский':4.6,'Обручевский':7.9,'Северное Бутово':10.0,'Тёплый Стан':9.1,
-  'Черёмушки':5.9,'Южное Бутово':69.2,'Ясенево':17.0,
-};
+// The okrug's own area is a single well-known figure, unlike per-district
+// areas, so the total is what gets checked. A district is only checked against
+// a plausibility band.
+const UZAO_AREA_KM2 = 111.3;
+const DISTRICT_AREA_BAND = [1, 80];
 
-// Landmarks with an unambiguous district, used as accuracy probes.
-const LANDMARKS = [
-  ['м. Академическая', 55.6872, 37.5731, 'Академический'],
-  ['м. Профсоюзная', 55.6775, 37.5625, 'Академический'],
-  ['м. Университет', 55.6926, 37.5347, 'Гагаринский'],
-  ['м. Новые Черёмушки', 55.6700, 37.5497, 'Черёмушки'],
-  ['м. Калужская', 55.6556, 37.5401, 'Обручевский'],
-  ['м. Беляево', 55.6425, 37.5261, 'Коньково'],
-  ['м. Коньково', 55.6333, 37.5194, 'Коньково'],
-  ['м. Тёплый Стан', 55.6187, 37.5074, 'Тёплый Стан'],
-  ['м. Ясенево', 55.6062, 37.5337, 'Ясенево'],
-  ['м. Новоясеневская', 55.6002, 37.5356, 'Ясенево'],
-  ['м. Нахимовский проспект', 55.6650, 37.5836, 'Котловка'],
-  ['м. Каховская', 55.6529, 37.6027, 'Зюзино'],
-  ['м. Бульвар Дмитрия Донского', 55.5694, 37.5697, 'Северное Бутово'],
-  ['м. Улица Скобелевская', 55.5495, 37.5432, 'Южное Бутово'],
-  ['м. Бунинская аллея', 55.5399, 37.5136, 'Южное Бутово'],
-  ['м. Ломоносовский проспект', 55.6807, 37.5142, 'Ломоносовский'],
-];
-
-// Regression probes carried over from v1.3.2 / v1.4.1.
+// Ground truth, not recollection. These three probes were supplied by the
+// project owner from real misclassifications; the rest are organisations from
+// an actual Yandex export, on streets that sit squarely inside one district.
 const PROBES = [
-  { lat: 55.6875, lon: 37.5730, expected: 'Академический' },
-  { lat: 55.644762, lon: 37.525993, forbidden: 'Академический' },
-  { lat: 55.647731, lon: 37.482145, forbidden: 'Академический' },
+  { lat: 55.6875, lon: 37.5730, expected: 'Академический', note: 'контрольная точка проекта' },
+  { lat: 55.644762, lon: 37.525993, forbidden: 'Академический', note: 'ложное попадание v1.3.2' },
+  { lat: 55.647731, lon: 37.482145, forbidden: 'Академический', note: 'ложное попадание v1.3.2' },
+  { lat: 55.687149, lon: 37.572078, expected: 'Академический', note: 'Штолле, Профсоюзная ул., 4' },
+  { lat: 55.700545, lon: 37.578120, expected: 'Академический', note: 'Ривьера, просп. 60-летия Октября, 8А' },
+  { lat: 55.679711, lon: 37.571931, expected: 'Академический', note: 'Гамбринус, ул. Кржижановского, 15к3' },
+  { lat: 55.688449, lon: 37.573502, expected: 'Академический', note: 'Jolly leprechaun, просп. 60-летия Октября, 20' },
 ];
 
 const rings = g => g.type === 'Polygon' ? g.coordinates : g.coordinates.flat();
@@ -98,20 +83,11 @@ console.log('\n== regression probes ==');
 let probeFail = 0;
 for (const p of PROBES) {
   const got = hits(p.lat, p.lon);
-  const ok = p.expected ? got.includes(p.expected) : !got.includes(p.forbidden);
+  const ok = p.expected ? (got.length === 1 && got[0] === p.expected) : !got.includes(p.forbidden);
   if (!ok) probeFail++;
-  console.log(`${ok ? 'PASS' : 'FAIL'} ${p.lat},${p.lon} ${p.expected ? `expect ${p.expected}` : `forbid ${p.forbidden}`} -> [${got.join(', ') || '—'}]`);
+  const want = p.expected ? `= ${p.expected}` : `≠ ${p.forbidden}`;
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${want.padEnd(20)} -> [${got.join(', ') || 'вне ЮЗАО'}]   ${p.note}`);
 }
-
-console.log('\n== landmark accuracy ==');
-let good = 0;
-for (const [name, lat, lon, expected] of LANDMARKS) {
-  const got = hits(lat, lon);
-  const ok = got.length === 1 && got[0] === expected;
-  if (ok) good++;
-  console.log(`${ok ? 'OK  ' : 'FAIL'} ${name.padEnd(28)} expect ${expected.padEnd(17)} -> [${got.join(', ') || 'нет района'}]`);
-}
-console.log(`landmarks: ${good}/${LANDMARKS.length}`);
 
 console.log('\n== overlap / coverage (0.002° grid over the ЮЗАО bbox) ==');
 let inside = 0, ambiguous = 0;
@@ -133,18 +109,25 @@ console.log(`claimed cells: ${inside}, claimed by 2+ districts: ${ambiguous} (${
 for (const [k, v] of [...pairs].sort((a, b) => b[1] - a[1])) console.log(`  ${k}: ${v} cells`);
 
 console.log('\n== area sanity ==');
-const kmLat = 111.32, kmLon = 111.32 * Math.cos(55.63 * Math.PI / 180);
-let areaFail = 0;
+const kmLat = 111.32;
+let total = 0, areaFail = 0;
 for (const d of DISTRICTS) {
-  let a = 0;
+  let a = 0, lats = [], n = 0;
   for (const ring of rings(geo[d])) {
     for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+    for (const p of ring) { lats.push(p[1]); n++; }
   }
-  a = Math.abs(a / 2) * kmLat * kmLon;
-  const ratio = a / OFFICIAL_AREA[d];
-  if (ratio < 0.75 || ratio > 1.3) areaFail++;
-  console.log(`${ratio < 0.75 || ratio > 1.3 ? 'WARN' : 'ok  '} ${d.padEnd(18)} ${a.toFixed(2).padStart(6)} km² vs official ≈${String(OFFICIAL_AREA[d]).padStart(5)} km²  ratio ${ratio.toFixed(2)}`);
+  const lat0 = lats.reduce((s, v) => s + v, 0) / n;
+  const km = Math.abs(a / 2) * kmLat * (111.32 * Math.cos(lat0 * Math.PI / 180));
+  total += km;
+  const bad = km < DISTRICT_AREA_BAND[0] || km > DISTRICT_AREA_BAND[1];
+  if (bad) areaFail++;
+  console.log(`${bad ? 'WARN' : 'ok  '} ${d.padEnd(18)} ${km.toFixed(2).padStart(6)} km²`);
 }
+const totalOff = Math.abs(total - UZAO_AREA_KM2) / UZAO_AREA_KM2 * 100;
+const totalBad = totalOff > 10;
+if (totalBad) areaFail++;
+console.log(`${totalBad ? 'WARN' : 'ok  '} ${'ВСЕГО'.padEnd(18)} ${total.toFixed(2).padStart(6)} km² против ≈${UZAO_AREA_KM2} km² у ЮЗАО (расхождение ${totalOff.toFixed(1)}%)`);
 
-console.log(`\nsummary: probes ${PROBES.length - probeFail}/${PROBES.length}, landmarks ${good}/${LANDMARKS.length}, ambiguous area ${pct.toFixed(1)}%, area warnings ${areaFail}`);
-process.exit(probeFail ? 1 : 0);
+console.log(`\nsummary: probes ${PROBES.length - probeFail}/${PROBES.length}, ambiguous area ${pct.toFixed(1)}%, area warnings ${areaFail}`);
+process.exit(probeFail || pct > 0.5 || areaFail ? 1 : 0);

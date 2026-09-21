@@ -1,4 +1,4 @@
-# GeoLeadScraper — Yandex Maps AUTO + BATCH (v1.6.0)
+# GeoLeadScraper — Yandex Maps AUTO + BATCH (v1.7.0)
 
 Сбор справочника организаций ЮЗАО Москвы по схеме **COLLECT RAW → LOCAL FILTER → FINAL**.
 
@@ -23,6 +23,8 @@ Google Maps и 2GIS части проекта не затрагиваются: �
 | `tools/smoke-test.mjs` | Тесты хранилища, дедупа, CSV, координат, гео и миграции с v1.4.x. |
 | `tools/bench-store.mjs` | Замер старого (`chrome.storage`) и нового (IndexedDB) пути записи. |
 | `tools/browser-check.mjs` | Проверка перехватчика ответов в настоящем Chromium. |
+| `tools/embed-boundaries.mjs` | Генерирует встроенные границы из `data/uzao_districts.geojson`. |
+| `data/uzao_districts.geojson` | Границы 12 районов ЮЗАО из OpenStreetMap (ODbL). |
 | `tools/geo-check.mjs` | Контроль качества границ: regression probes, 16 контрольных точек, перекрытия, площади. |
 | `tools/analyze-raw.mjs` | Аудит RAW/FINAL CSV + прогон локального фильтра без Chrome. |
 
@@ -94,8 +96,12 @@ RAW можно вернуть в расширение кнопкой **IMPORT RA
 
 ## Границы районов
 
-Геофильтр работает только офлайн. Подробности и известные ограничения
-встроенного набора границ — в [`docs/GEO_BOUNDARIES.md`](docs/GEO_BOUNDARIES.md).
+Границы 12 районов ЮЗАО встроены в расширение и работают из коробки — загружать
+ничего не нужно. Источник — OpenStreetMap (`admin_level=8`), © OpenStreetMap
+contributors, ODbL 1.0. Геофильтр работает только офлайн.
+
+Подробности и способ подставить свой набор границ —
+в [`docs/GEO_BOUNDARIES.md`](docs/GEO_BOUNDARIES.md).
 
 ## Ограничения по назначению
 
