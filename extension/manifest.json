@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "default_locale": "en",
-  "version": "1.10.3",
+  "version": "1.11.0",
   "name": "__MSG_extensionName__",
   "description": "__MSG_extensionDescription__",
   "permissions": [

@@ -45,6 +45,10 @@
     // navigation forever because the page shows a different string is how a
     // batch turns into an endless reload loop.
     MAX_NAV_ATTEMPTS: 2,
+    // Rough size of the Yandex Maps map pane, used to pick a zoom that fits a
+    // district into the view.
+    VIEW_WIDTH_PX: 620,
+    VIEW_HEIGHT_PX: 560,
   };
 
   const blankAuto = () => ({
@@ -343,6 +347,31 @@
   const geometryRings=g=>g?.type==='Polygon'?(g.coordinates||[]):g?.type==='MultiPolygon'?(g.coordinates||[]).flat():[];
   const geometryBounds=g=>{let minLon=Infinity,maxLon=-Infinity,minLat=Infinity,maxLat=-Infinity;walkPositions(g?.coordinates,p=>{minLon=Math.min(minLon,p[0]);maxLon=Math.max(maxLon,p[0]);minLat=Math.min(minLat,p[1]);maxLat=Math.max(maxLat,p[1]);});return [minLon,maxLon,minLat,maxLat].every(Number.isFinite)?{minLon,maxLon,minLat,maxLat}:null;};
   const boundsContains=(b,x,y,e=0)=>!!b&&x>=b.minLon-e&&x<=b.maxLon+e&&y>=b.minLat-e&&y<=b.maxLat+e;
+
+  // The map viewport is part of the query: Yandex ranks and limits results
+  // around it. Left to itself the URL keeps whatever the previous search set,
+  // so every district after the first was searched from the wrong place - a run
+  // for Коньково was centred over Академический, six kilometres away.
+  let districtViews=null;
+  const districtView = name => {
+    if(!name)return null;
+    if(!districtViews){
+      districtViews={};
+      for(const d of Object.keys(DISTRICTS)){
+        const b=geometryBounds(LOCAL_GEO[d]); if(!b)continue;
+        const spanLon=Math.max(1e-6,b.maxLon-b.minLon), spanLat=Math.max(1e-6,b.maxLat-b.minLat);
+        const zLon=Math.log2(360*CFG.VIEW_WIDTH_PX/(256*spanLon));
+        const zLat=Math.log2(180*CFG.VIEW_HEIGHT_PX/(256*spanLat));
+        districtViews[d]={
+          lon:+((b.minLon+b.maxLon)/2).toFixed(6),
+          lat:+((b.minLat+b.maxLat)/2).toFixed(6),
+          z:Math.max(11,Math.min(16,Math.floor(Math.min(zLon,zLat)))),
+        };
+      }
+    }
+    const key=Object.keys(DISTRICTS).find(d=>normalize(d)===normalize(name));
+    return key?districtViews[key]||null:null;
+  };
   const onSegment=(x,y,a,b)=>{
     const len=(b[0]-a[0])**2+(b[1]-a[1])**2;
     // GeoJSON rings are closed, so ring[n-1] === ring[0] and inRing's first
@@ -880,11 +909,18 @@
     if(!out.length) throw new Error('В CSV нет непустых поисковых запросов.'); return out;
   };
 
-  const buildSearchUrl = query => {
+  const buildSearchUrl = (query,district=null) => {
     const current=new URL(location.href), m=current.pathname.match(/^\/maps\/([^/]+)\/([^/]+)/i);
     const region=m?.[1]||'213', city=(m?.[2]&&m[2]!=='search')?m[2]:'moscow';
     const next=new URL(`${current.origin}/maps/${region}/${city}/search/${encodeURIComponent(query)}/`);
-    for(const key of ['ll','z']){const v=current.searchParams.get(key);if(v)next.searchParams.set(key,v);} return next.toString();
+    const view=districtView(district);
+    if(view){
+      next.searchParams.set('ll',`${view.lon},${view.lat}`);
+      next.searchParams.set('z',String(view.z));
+    }else{
+      for(const key of ['ll','z']){const v=current.searchParams.get(key);if(v)next.searchParams.set(key,v);}
+    }
+    return next.toString();
   };
 
   const parseRawCsv = text => {
@@ -948,7 +984,7 @@
         if(attempts<CFG.MAX_NAV_ATTEMPTS){
           await patchBatch({navAttempts:attempts+1});
           blog('navigate',{index:batch.currentIndex+1,query:current.query,attempt:attempts+1});
-          location.assign(buildSearchUrl(current.query));
+          location.assign(buildSearchUrl(current.query,current.district));
           return;
         }
         // Yandex is showing its own rewrite of the query. It is the same search,
@@ -987,7 +1023,7 @@
       batch={...batch,queue:q,warnings,...totals,completedQueries:completed,currentIndex:next,navAttempts:0,lastProgressTime:Date.now(),error:null,status:next>=q.length?BATCH.COMPLETED:BATCH.RUNNING,filterStatus:'IDLE',filterPhase:'IDLE',filterError:null,filterStartedAt:null,filterCompletedAt:null,filterStats:blankBatch().filterStats};
       await persistBatch();blog('query completed',{index:next,query:current.query,queryRawUnique:state.uniqueCount,totalRawUnique:totals.uniqueCount});
       if(next>=q.length){blog('completed',{queries:completed,unique:totals.uniqueCount});return;}
-      await resetAuto();const n=q[next];blog('next query',{index:next+1,query:n.query});location.assign(buildSearchUrl(n.query));
+      await resetAuto();const n=q[next];blog('next query',{index:next+1,query:n.query,district:n.district});location.assign(buildSearchUrl(n.query,n.district));
     }finally{batchAdvancing=false;}
   };
 

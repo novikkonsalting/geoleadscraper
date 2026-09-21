@@ -351,6 +351,35 @@ check('what was not topped up stays queued for the next run',
   (await fast.api.storeTotals()).pendingPriority === 4,
   `${(await fast.api.storeTotals()).pendingPriority}`);
 
+// --- the search must be centred on the district it is looking for ------------
+section('search viewport');
+{
+  const view = await loadExtension({ withStore: true });
+  const konkovo = view.api.districtView('Коньково');
+  check('every district has a viewport derived from its own outline',
+    konkovo && Math.abs(konkovo.lon - 37.53) < 0.05 && Math.abs(konkovo.lat - 55.64) < 0.05,
+    JSON.stringify(konkovo));
+  check('a large district gets a wider zoom than a small one',
+    view.api.districtView('Южное Бутово').z < view.api.districtView('Ломоносовский').z,
+    `${view.api.districtView('Южное Бутово').z} vs ${view.api.districtView('Ломоносовский').z}`);
+
+  // A real run had ll pointing at Академический while searching Коньково,
+  // because the URL kept whatever the previous search had left there.
+  globalThis.location.href = 'https://yandex.ru/maps/213/moscow/search/x/?ll=37.577063%2C55.689009&z=13';
+  const url = new URL(view.api.buildSearchUrl('кафе район Коньково Москва', 'Коньково'));
+  check('the viewport follows the district, not the previous search',
+    url.searchParams.get('ll') === `${konkovo.lon},${konkovo.lat}`, url.searchParams.get('ll'));
+  check('and the zoom is the one that fits that district',
+    url.searchParams.get('z') === String(konkovo.z), url.searchParams.get('z'));
+  check('the query itself is still what was asked for',
+    decodeURIComponent(url.pathname).includes('кафе район Коньково Москва'), url.pathname);
+  const free = new URL(view.api.buildSearchUrl('что-нибудь', ''));
+  check('a query with no district keeps the current view instead of jumping',
+    free.searchParams.get('ll') === '37.577063,55.689009', free.searchParams.get('ll'));
+  globalThis.location.href = 'https://yandex.ru/maps/213/moscow/search/test/';
+  globalThis.location.search = '';
+}
+
 // --- a query Yandex rewrites must not turn into a reload loop ----------------
 section('batch navigation');
 {

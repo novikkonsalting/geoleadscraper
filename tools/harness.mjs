@@ -96,7 +96,7 @@ export async function loadExtension({ withStore = false } = {}) {
       placeIdFromUrl, ensureGeo, evaluateItem, store, storeTotals, eachStored,
       loadRawText, filterBatch, resetBatch, restore, migrateLegacyDataset,
       stopFilter, needsCardData, seedFromDocument, rememberEntities,
-      runBatchCurrent, startBatch, loadBatchText, looseQuery,
+      runBatchCurrent, startBatch, loadBatchText, looseQuery, buildSearchUrl, districtView,
       setBatch: b => { batch = { ...batch, ...b }; },
       setGeoCache: c => { geoCache = c; },
       buildGeoCache, embeddedGeo,
