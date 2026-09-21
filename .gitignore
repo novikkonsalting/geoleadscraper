@@ -4,3 +4,7 @@ node_modules/
 # Snapshot of the repository itself: regenerate with
 # node tools/build.mjs --project-zip
 dist/geoleadscraper-project-*.zip
+
+# Repaired user exports produced by tools/fix-swapped-coords.mjs.
+# These are collected business data, not project files.
+dist/*.csv
