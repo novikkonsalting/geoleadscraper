@@ -270,12 +270,31 @@ check('the recovered row keeps its provenance', fast.shared.sourceRecords(recove
 check('the top-up filled the gap that was blocking it', recovered.categories === 'Ресторан, бар');
 const topped = await fast.api.store('getRawByPlaceId', { place_id: '6000002' });
 check('an accepted row had its missing field filled in', topped.website === 'https://b.ru/');
+
 check('nothing is left waiting', (await fast.api.storeTotals()).pendingPriority === 0);
 
 asked.length = 0;
 await fast.api.filterBatch();
 check('re-filtering asks for no further cards', asked.length === 0, JSON.stringify(asked));
 check('and reaches the same register', fast.api.getBatch().filterStats.accepted === 3);
+// The upstream extractor reports the coordinate pair in Yandex's order. The
+// collect path repairs it; the top-up path used to skip the repair and wrote
+// latitude 37.x / longitude 55.x into the registry.
+await fast.api.store('clearRaw');
+await fast.api.store('putRaw', {
+  records: [{ place_id: '6500001', title: 'Координаты', maps_url: 'https://yandex.ru/maps/org/z/6500001/',
+    detail_level: 'LIST', categories: 'Ресторан', phone: '', website: '', opening_hours: '',
+    latitude: 55.687149, longitude: 37.572078 }],
+  record: akademicheskiy,
+});
+fast.setCardFetcher(async () => ({ latitude: 37.572078, longitude: 55.687149, phone: '+74950000009' }));
+await fast.api.filterBatch();
+const fixed = await fast.api.store('getRawByPlaceId', { place_id: '6500001' });
+check('a topped-up row keeps latitude ≈55 and longitude ≈37',
+  Math.round(fixed.latitude) === 56 && Math.round(fixed.longitude) === 38,
+  `lat=${fixed.latitude} lon=${fixed.longitude}`);
+check('and it is still in the register afterwards', fast.api.getBatch().filterStats.accepted === 1);
+
 
 // Stopping has to take effect and leave the rest resumable.
 await fast.api.store('clearRaw');

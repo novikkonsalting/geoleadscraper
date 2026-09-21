@@ -1,4 +1,4 @@
-# GeoLeadScraper — Yandex Maps AUTO + BATCH (v1.9.0)
+# GeoLeadScraper — Yandex Maps AUTO + BATCH (v1.9.1)
 
 Сбор справочника организаций ЮЗАО Москвы по схеме **COLLECT RAW → LOCAL FILTER → FINAL**.
 
@@ -24,6 +24,7 @@ Google Maps и 2GIS части проекта не затрагиваются: �
 | `tools/bench-store.mjs` | Замер старого (`chrome.storage`) и нового (IndexedDB) пути записи. |
 | `tools/browser-check.mjs` | Проверка перехватчика ответов в настоящем Chromium. |
 | `tools/embed-boundaries.mjs` | Генерирует встроенные границы из `data/uzao_districts.geojson`. |
+| `tools/fix-swapped-coords.mjs` | Чинит перевёрнутые latitude/longitude в уже выгруженном CSV. |
 | `data/uzao_districts.geojson` | Границы 12 районов ЮЗАО из OpenStreetMap (ODbL). |
 | `tools/geo-check.mjs` | Контроль качества границ: regression probes, 16 контрольных точек, перекрытия, площади. |
 | `tools/analyze-raw.mjs` | Аудит RAW/FINAL CSV + прогон локального фильтра без Chrome. |

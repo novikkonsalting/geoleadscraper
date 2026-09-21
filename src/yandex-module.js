@@ -547,14 +547,15 @@
     // was not driven, not that Yandex ran out of results - say so instead of
     // reporting a silent success.
     const neverScrolled = !state.scrolledEver && state.uniqueCount < CFG.LOW_YIELD_UNIQUE;
-    // The page hook counts every organisation Yandex itself loaded for this
-    // query. Finishing with far fewer than that means the run ended early, not
-    // that the results ran out.
-    const leftBehind = state.listSeen > 0 && state.uniqueCount < state.listSeen * 0.8;
+    // Only a run that was cut off is suspicious. Comparing against listSeen was
+    // wrong: the page hook also sees organisations from map viewport and
+    // recommendation payloads, which were never part of this result list, so
+    // that comparison flagged healthy runs as incomplete.
+    const cutOff = String(reason||'').includes('safety timeout');
     const warning = neverScrolled
       ? `Сбор завершился после ${state.uniqueCount} карточек, но список выдачи ни разу не прокрутился. Результат почти наверняка неполный: проверьте, что открыт список результатов Яндекс Карт, и повторите запрос.`
-      : leftBehind
-        ? `Яндекс отдал ${state.listSeen} организаций по этому запросу, а собрано ${state.uniqueCount}. Часть выдачи не попала в реестр — повторите запрос.`
+      : cutOff
+        ? `Запрос остановлен по защитному таймауту после ${state.uniqueCount} карточек, выдача могла закончиться не полностью. Повторите запрос, если нужна гарантия полноты.`
         : null;
     await patchAuto({status:AUTO.COMPLETED,error:null,warning},true);
     log('completed', {unique:state.uniqueCount, reason, scrolledEver:state.scrolledEver, warning});
@@ -700,7 +701,7 @@
       write => eachStored('listRaw', rows => write(rows.map(row=>({...row,...meta})))));
   };
   const exportBatchFinal = async () => saveCsvStream('geoleadscraper-yandex_maps-FINAL_FILTERED',
-    ['matched_source_district','matched_source_group','matched_source_category','title','address','phone','website','maps_url','source','matched_source_query','matched_source_queries_count','matched_source_records','category_validation','district_validation','district_quality','district_candidates','detected_district','final_status','exclude_reason','place_id','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'],
+    ['matched_source_district','matched_source_group','matched_source_category','title','address','phone','website','maps_url','source','matched_source_query','matched_source_queries_count','matched_source_records','category_validation','district_validation','district_quality','district_candidates','detected_district','detail_level','final_status','exclude_reason','place_id','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'],
     write => eachStored('listFinal', rows => write(rows)));
 
   // -------- BATCH CSV --------
@@ -937,7 +938,15 @@
         if(filterStop)return;
         let card=null;
         if(row.maps_url){try{card=await parser(row.maps_url,{extractWebsites:false});}catch{card=null;}}
-        if(card){await store('enrichRaw',{records:[{key:row.key,fields:card}]});stats.cardsLoaded++;}
+        if(card){
+          // The upstream extractor reports coordinates in the order Yandex
+          // gives them, so the pair needs the same repair as on collection.
+          // Skipping it here wrote latitude 37.x / longitude 55.x into the
+          // registry for every topped-up row.
+          const fields=normalizeCoords(card);
+          delete fields._coords_swapped;
+          await store('enrichRaw',{records:[{key:row.key,fields}]});stats.cardsLoaded++;
+        }
         else{await store('enrichRaw',{records:[{key:row.key,fields:{},detailLevel:'LIST_ONLY'}]});stats.cardsFailed++;}
         stats.cardsDone++;
         if(stats.cardsDone%5===0)await patchBatch({filterStats:{...stats}});
@@ -1021,7 +1030,7 @@
   const singleHtml = () => {
     if(batch.status!==BATCH.IDLE)return '';
     const q=state.currentSearchQuery?`<div style="margin-top:4px;font-size:11px;word-break:break-word">Запрос: ${esc(state.currentSearchQuery)}</div>`:'';
-    const stats=state.status===AUTO.IDLE?'':`<div style="margin-top:6px;line-height:1.5"><div>Уникальных ID просмотрено: ${state.totalEncountered}</div><div>Уникальных: ${state.uniqueCount}</div><div>Дублей/повторов: ${state.duplicatesCount}</div><div>Сетевых карточек: ${state.networkRequests}</div><div>FAST skip: ${state.fastSkippedDuplicates}</div><div>Из общего кэша: ${state.reusedFromBatchCache}</div><div>Записей в выдаче увидено: ${state.listSeen}</div><div>Из выдачи без запроса: ${state.fromList}</div><div>Прокрутка списка: ${state.scrolledEver?'да':'НЕТ'}</div><div>Без новых данных: ${state.noProgressCycles} / ${CFG.NO_PROGRESS_LIMIT}</div>${q}</div>`;
+    const stats=state.status===AUTO.IDLE?'':`<div style="margin-top:6px;line-height:1.5"><div>Уникальных ID просмотрено: ${state.totalEncountered}</div><div>Уникальных: ${state.uniqueCount}</div><div>Дублей/повторов: ${state.duplicatesCount}</div><div>Сетевых карточек: ${state.networkRequests}</div><div>FAST skip: ${state.fastSkippedDuplicates}</div><div>Из общего кэша: ${state.reusedFromBatchCache}</div><div>Организаций видел на странице: ${state.listSeen}</div><div>Из выдачи без запроса: ${state.fromList}</div><div>Прокрутка списка: ${state.scrolledEver?'да':'НЕТ'}</div><div>Без новых данных: ${state.noProgressCycles} / ${CFG.NO_PROGRESS_LIMIT}</div>${q}</div>`;
     const err=state.error?`<div style="margin-top:6px;color:#a16207;font-size:11px;word-break:break-word">${esc(state.error)}</div>`:'';
     let buttons='';
     if(state.status===AUTO.IDLE)buttons=btn('AUTO COLLECT · ОДИН ЗАПРОС','auto-start');
@@ -1060,7 +1069,7 @@
           `<div style="margin-top:4px;font-size:11px;color:#444">${esc(activity)}</div>`+
           `<div style="display:grid;grid-template-columns:1fr auto;gap:3px 10px;margin-top:7px;padding-top:6px;border-top:1px solid #eee;font-size:11px">`+
             `<span>RAW уникальных в запросе</span><b>${state.uniqueCount}</b>`+
-            `<span>Записей в выдаче увидено</span><b>${state.listSeen}</b>`+
+            `<span>Организаций видел на странице</span><b>${state.listSeen}</b>`+
             `<span>Из выдачи без запроса</span><b>${state.fromList}</b>`+
             `<span>Новых сетевых карточек</span><b>${state.networkRequests}</b>`+
             `<span>FAST skip дублей</span><b>${state.fastSkippedDuplicates}</b>`+
@@ -1126,7 +1135,7 @@
       }
       if(!filterRunning)buttons+=btn(`RESET BATCH — УДАЛИТЬ RAW (${batch.uniqueCount})`,'batch-reset','color:#a16207');
     }
-    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.9.0</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
+    return `<div style="${divider}"><div style="font-size:13px;font-weight:700">BATCH QUERY QUEUE · v1.9.1</div><div style="margin-top:5px">Статус: <b>${batchLabel(s)}</b></div><div style="margin-top:2px;font-size:11px">Схема: <b>COLLECT RAW → LOCAL FILTER → FINAL</b></div><div style="margin-top:2px;font-size:11px">Границы 12 районов встроены локально. Геофильтр не использует сеть и запускается только после RAW.</div>${progress}${stats}${warnBlock}${filter}${file}${err}${buttons}<input id="gls-batch-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"><input id="gls-raw-file" type="file" accept=".csv,text/csv,text/plain" style="display:none"></div>`;
   };
 
   const render = () => {
