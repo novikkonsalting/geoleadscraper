@@ -145,6 +145,31 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
   // queries - and, when a RAW export is merged back in, by several runs.
   // Returns the row to store plus how many new source records it gained, which
   // the caller uses to keep the source-hits total exact.
+  // How complete a row is known to be. A card fetch beats a list entry; a row
+  // whose card could not be fetched sits in between.
+  const DETAIL_RANK = { LIST: 0, LIST_ONLY: 1, CARD: 2 };
+  const PROVENANCE = new Set(['key', 'source_records', 'source_queries_count', 'source_district', 'source_group', 'source_category', 'source_query']);
+  const isBlank = v => v === undefined || v === null || v === '';
+
+  // The stored version of a field wins, but an empty one is not a version: it
+  // is a gap, and the incoming row may have what fills it. Without this, an
+  // organisation first seen as a thin list entry in one district's export kept
+  // that emptiness forever, and the full record from the district that actually
+  // fetched its card was thrown away on merge.
+  const fillBlanks = (existing, incoming) => {
+    if (!incoming || incoming === existing) return existing;
+    const out = { ...existing };
+    for (const [field, value] of Object.entries(incoming)) {
+      if (PROVENANCE.has(field) || isBlank(value)) continue;
+      if (field === 'detail_level') {
+        if ((DETAIL_RANK[value] ?? -1) > (DETAIL_RANK[out.detail_level] ?? -1)) out.detail_level = value;
+        continue;
+      }
+      if (isBlank(out[field])) out[field] = value;
+    }
+    return out;
+  };
+
   const mergeRecord = (existing, incoming, record) => {
     const records = sourceRecords(existing);
     let addedHits = 0;
@@ -161,7 +186,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     // was exported with, and merging must keep both sides' history.
     for (const own of sourceRecords(incoming)) add(own);
     add(record);
-    const base = existing || incoming;
+    const base = existing ? fillBlanks(existing, incoming) : incoming;
     return {
       row: {
         ...base,
@@ -184,7 +209,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     };
   };
 
-  globalThis.GLSRecord = { normalize, normPhone, stableKey, sourceRecords, uniqueJoined, cleanRecord, mergeRecord };
+  globalThis.GLSRecord = { normalize, normPhone, stableKey, sourceRecords, uniqueJoined, cleanRecord, mergeRecord, fillBlanks };
 })();
 
 // Extracts organisation entities out of whatever JSON Yandex Maps already

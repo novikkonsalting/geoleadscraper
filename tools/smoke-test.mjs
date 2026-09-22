@@ -35,6 +35,22 @@ const first = shared.mergeRecord(null, { place_id: '1', title: 'Штолле' },
 const second = shared.mergeRecord(first.row, { place_id: '1', title: 'Штолле (переименован)' }, { district: 'Академический', group: 'Общепит', category: 'Кафе', query: 'q2' });
 check('merging keeps both source records', shared.sourceRecords(second.row).length === 2);
 check('merging keeps the first version of the card', second.row.title === 'Штолле');
+
+// An empty field is a gap, not a version. An organisation first seen as a thin
+// list entry used to keep that emptiness forever, so merging a district export
+// that had fetched its card threw the full record away.
+const thin = shared.mergeRecord(null, { place_id: '9', title: 'Пятёрочка', categories: '', phone: '', detail_level: 'LIST' },
+  { district: 'Академический', group: 'Продуктовая розница', category: 'Супермаркет', query: 'q1' });
+const full = shared.mergeRecord(thin.row, { place_id: '9', title: 'Пятёрочка', categories: 'Супермаркет, магазин продуктов', phone: '+74950000000', detail_level: 'CARD' },
+  { district: 'Гагаринский', group: 'Продуктовая розница', category: 'Супермаркет', query: 'q2' });
+check('a later, fuller version fills the gaps of a thin one',
+  full.row.categories === 'Супермаркет, магазин продуктов' && full.row.phone === '+74950000000', JSON.stringify(full.row));
+check('and the row is promoted to CARD', full.row.detail_level === 'CARD', full.row.detail_level);
+const thinAgain = shared.mergeRecord(full.row, { place_id: '9', title: 'Пятёрочка', categories: '', phone: '', detail_level: 'LIST' }, null);
+check('a thinner version later never erases what is already there',
+  thinAgain.row.categories === 'Супермаркет, магазин продуктов' && thinAgain.row.detail_level === 'CARD');
+check('provenance is never taken from the incoming row wholesale',
+  shared.sourceRecords(full.row).length === 2);
 check('merging reports a new source hit', first.addedHits === 1 && second.addedHits === 1);
 const repeat = shared.mergeRecord(second.row, { place_id: '1' }, { district: 'Академический', group: 'Общепит', category: 'Кафе', query: 'q2' });
 check('the same query twice is not counted twice', repeat.addedHits === 0 && shared.sourceRecords(repeat.row).length === 2);
