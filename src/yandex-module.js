@@ -25,7 +25,9 @@
     // seconds per query against the hours the fast path saves.
     NO_PROGRESS_LIMIT: 10,
     MIN_NO_PROGRESS_MS: 25000,
-    MAX_RUN_MS: 30 * 60 * 1000,
+    // A query that has not finished in twelve minutes is not going to add much
+    // more, and eighty-nine of them at half an hour each is a lost weekend.
+    MAX_RUN_MS: 12 * 60 * 1000,
     REPEATED_KNOWN_CYCLES_REQUIRED: 3,
     FIND_CONTAINER_TIMEOUT_MS: 15000,
     MUTATION_TIMEOUT_MS: 2500,
@@ -55,7 +57,9 @@
     CHAIN_MIN_BRANCHES: 3,
     // How many times a query that harvested fewer than LOW_YIELD_UNIQUE
     // organisations is pushed to load more before its result is believed.
-    SHORT_LIST_PUSHES: 3,
+    SHORT_LIST_PUSHES: 2,
+    // Quiet cycles required after a push before the short result is believed.
+    POST_PUSH_CYCLES: 3,
     // Rough size of the Yandex Maps map pane, used to pick a zoom that fits a
     // district into the view.
     VIEW_WIDTH_PX: 620,
@@ -629,6 +633,21 @@
     return {container:fresh,clicked};
   };
 
+  // Tells the service worker this page is still alive. A tab that stops saying
+  // so while it was collecting has crashed, and the worker reloads it - see
+  // src/watch-worker.js. Nothing is sent unless a batch is actually running.
+  const pingWorker = () => {
+    if(![BATCH.RUNNING,BATCH.USER_ACTION_REQUIRED].includes(batch.status))return;
+    try{
+      const sent=chrome.runtime.sendMessage({type:'GLS_ALIVE',payload:{
+        batchRunning:batch.status===BATCH.RUNNING,
+        autoStatus:state.status,
+        query:state.currentSearchQuery||'',
+      }});
+      if(sent&&typeof sent.catch==='function')sent.catch(()=>{});
+    }catch{}
+  };
+
   const autoSnapshot = () => ({...state,seenUrls:[...seenUrls],seenPlaceIds:[...seenPlaceIds],acceptedKeys:[...acceptedKeys]});
   const writeAutoStorage = async () => {
     // Materialising the dedupe sets is O(n); doing it here rather than on every
@@ -773,7 +792,10 @@
       const started = state.startTime || Date.now();
       if (Date.now() - started > CFG.MAX_RUN_MS) {
         const noNewFor = Date.now() - (state.lastProgressTime || started);
-        if (state.uniqueCount > 0 && noNewFor >= CFG.MIN_NO_PROGRESS_MS) {
+        // Anything collected is a finished query, not a failure. Throwing here
+        // put the whole batch into ERROR because one query was still trickling
+        // at the time limit - an overnight run died on its slowest query.
+        if (state.uniqueCount > 0) {
           log('safety timeout converted to completion',{unique:state.uniqueCount,noNewFor});
           return complete('safety timeout after useful progress');
         }
@@ -821,8 +843,15 @@
           const pushed = await pressForMore(container);
           container = pushed.container;
           log('short list: pushing for more', {unique:state.uniqueCount, push:pushes, clickedMore:pushed.clicked});
+          // Only a short re-check after a push, not the full patience again:
+          // waiting ten more quiet cycles per push turned every short query
+          // into ten minutes, and the pushes rarely find anything.
           stagnant = 0; repeatedKnown = 0;
-          await patchAuto({noProgressCycles:0, shortListPushes:pushes, lastProgressTime:Date.now()});
+          await patchAuto({
+            noProgressCycles:Math.max(0,CFG.NO_PROGRESS_LIMIT-CFG.POST_PUSH_CYCLES),
+            shortListPushes:pushes,
+            lastProgressTime:Date.now(),
+          });
           continue;
         }
         log('result list stabilized',{noProgressCycles:state.noProgressCycles,stagnant,repeatedKnown,pushes,cycleStats});
@@ -859,6 +888,13 @@
   // has been touched for minutes, the run is hung, and a hung run that reports
   // "работает" forever is the worst outcome of all - it costs a whole night.
   const watchdogTick = async () => {
+    pingWorker();
+    // A loop that does not exist cannot stall, so the heartbeat check below
+    // would never fire for it. This is the state a page reload leaves behind.
+    if (state.status === AUTO.RUNNING && !loopPromise) {
+      log('collection loop was missing after a reload, restarting it',{unique:state.uniqueCount});
+      beat(); ensureLoop(); return;
+    }
     if (state.status !== AUTO.RUNNING || !heartbeat) return;
     const stalledFor = Date.now() - heartbeat;
     if (stalledFor < CFG.STALL_LIMIT_MS) return;
@@ -1181,7 +1217,15 @@
       }
       await sleep(CFG.BATCH_PAGE_SETTLE_MS); if(batch.status!==BATCH.RUNNING)return;
       const same=state.currentQueryId===current.id;
-      if(same&&state.status===AUTO.RUNNING)return;
+      if(same&&state.status===AUTO.RUNNING){
+        // A page reload - or a renderer crash - leaves the persisted state
+        // saying RUNNING while nothing is actually running. Returning here is
+        // how a batch went dead after a white screen until someone pressed
+        // PAUSE and then RESUME by hand. The dedupe sets were restored with the
+        // state, so the query simply carries on where it stopped.
+        if(!loopPromise){blog('query resumed after a page reload',{index:batch.currentIndex+1,query:current.query,unique:state.uniqueCount});beat();ensureLoop();}
+        return;
+      }
       if(same&&[AUTO.PAUSED,AUTO.USER_ACTION_REQUIRED].includes(state.status)){await resumeAuto();return;}
       if(same&&state.status===AUTO.COMPLETED){batchAdvancing=false;await finishBatchCurrent();return;}
       // Record what Yandex actually put on the page when it differs from what

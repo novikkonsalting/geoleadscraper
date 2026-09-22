@@ -652,6 +652,7 @@ section('a stalled run ends instead of waiting forever');
 
   // The watchdog: the loop is parked, so only something outside it can notice.
   stall.api.setState({ status: 'RUNNING', uniqueCount: 44, currentSearchQuery: 'рестораны Гагаринский район Москва' });
+  stall.api.parkLoop();
   stall.api.setHeartbeat(Date.now() - 10 * 60 * 1000);
   await stall.api.watchdogTick();
   const after = stall.api.getState();
@@ -661,6 +662,7 @@ section('a stalled run ends instead of waiting forever');
     after.uniqueCount === 44 && /завис/.test(after.warning || ''), after.warning);
 
   stall.api.setState({ status: 'RUNNING', uniqueCount: 0, warning: null, error: null });
+  stall.api.parkLoop();
   stall.api.setHeartbeat(Date.now() - 10 * 60 * 1000);
   await stall.api.watchdogTick();
   check('a stall with nothing collected is reported as an error, not as a finished query',
@@ -668,9 +670,21 @@ section('a stalled run ends instead of waiting forever');
     stall.api.getState().error);
 
   stall.api.setState({ status: 'RUNNING', error: null });
+  stall.api.parkLoop();
   stall.api.beat();
   await stall.api.watchdogTick();
   check('a collector that is working is left alone', stall.api.getState().status === 'RUNNING');
+
+  // The white screen. A renderer crash takes the loop with it, and the state
+  // that comes back from storage still says RUNNING. Nothing inside the loop
+  // can report a stall, because there is no loop: the batch just sat there
+  // until someone pressed PAUSE and RESUME by hand.
+  stall.api.setState({ status: 'RUNNING', uniqueCount: 12, error: null, warning: null });
+  stall.api.dropLoop();
+  stall.api.setHeartbeat(0);
+  await stall.api.watchdogTick();
+  check('a loop that a crash took away is started again, not declared stalled',
+    stall.api.hasLoop() && stall.api.getState().status === 'RUNNING', stall.api.getState().status);
 }
 
 // --- discards, yields and export shape --------------------------------------
@@ -778,6 +792,74 @@ section('a short result list is not a finished one');
     JSON.stringify(meta.meta));
   check('a phone with no extension is left exactly as it is',
     yield_.api.splitExt('+7 (495) 000-00-01').phone === '+7 (495) 000-00-01' && yield_.api.splitExt('').ext === '');
+}
+
+// --- surviving a white screen ------------------------------------------------
+section('a crashed page must not need a human')
+{
+  const crash = await loadExtension({ withStore: true });
+  crash.api.setBatch({
+    status: 'RUNNING', fileName: 'DOSBOR.csv', currentIndex: 0,
+    queue: [{ id: 'q1', district: 'Зюзино', group: 'Общепит', category: 'Бар', query: 'бары район Зюзино Москва', status: 'RUNNING' }],
+  });
+  // Exactly what comes back from storage after a reload: the query is still
+  // bound and marked RUNNING, and there is no loop behind it.
+  crash.api.setState({ status: 'RUNNING', currentQueryId: 'q1', currentSearchQuery: 'бары район Зюзино Москва', uniqueCount: 12 });
+  crash.api.dropLoop();
+  globalThis.location.href = 'https://yandex.ru/maps/213/moscow/search/бары район Зюзино Москва/';
+  globalThis.location.pathname = '/maps/213/moscow/search/бары район Зюзино Москва/';
+  const before = globalThis.location.navigations.length;
+  await crash.api.runBatchCurrent();
+  check('the query carries on by itself instead of waiting for PAUSE and RESUME',
+    crash.api.hasLoop(), 'no loop was started');
+  check('and it continues the same query rather than navigating again',
+    globalThis.location.navigations.length === before && crash.api.getState().uniqueCount === 12);
+
+  // The watcher in the service worker. A tab that stops reporting while it was
+  // collecting is reloaded; one that is waiting for a person never is.
+  const w = crash.watch;
+  crash.openTab(7); crash.openTab(8);
+  crash.heartbeat(7, { batchRunning: true, autoStatus: 'RUNNING', query: 'бары' });
+  crash.heartbeat(8, { batchRunning: true, autoStatus: 'RUNNING', query: 'кафе' });
+  await new Promise(r => setTimeout(r, 0));
+  await crash.fireAlarm('gls-tab-watch');
+  check('a tab that answered a moment ago is left alone', crash.reloadedTabs.length === 0, JSON.stringify(crash.reloadedTabs));
+
+  // Age tab 7 past the silence limit, and put tab 8 in front of a CAPTCHA.
+  {
+    const state = await w.read();
+    state[7] = { ...state[7], at: Date.now() - w.SILENT_MS - 1000 };
+    state[8] = { ...state[8], at: Date.now() - w.SILENT_MS - 1000, autoStatus: 'USER_ACTION_REQUIRED' };
+    await w.write(state);
+  }
+  await crash.fireAlarm('gls-tab-watch');
+  check('a tab that went silent while collecting is reloaded',
+    crash.reloadedTabs.includes(7), JSON.stringify(crash.reloadedTabs));
+  check('a tab waiting for the user is never reloaded - that check is addressed to them',
+    !crash.reloadedTabs.includes(8), JSON.stringify(crash.reloadedTabs));
+
+  // A reload that did not help must not become a reload loop.
+  await crash.fireAlarm('gls-tab-watch');
+  check('and it is not reloaded again straight away',
+    crash.reloadedTabs.filter(x => x === 7).length === 1, JSON.stringify(crash.reloadedTabs));
+
+  crash.closeTab(7);
+  {
+    const state = await w.read();
+    state[7] = { ...state[7], at: Date.now() - w.SILENT_MS - 1000, lastReload: Date.now() - w.COOLDOWN_MS - 1000 };
+    await w.write(state);
+  }
+  await crash.fireAlarm('gls-tab-watch');
+  check('a tab the user closed is forgotten instead of chased',
+    !(7 in (await w.read())), JSON.stringify(await w.read()));
+
+  // The content script only reports while a batch is actually collecting.
+  const quiet = await loadExtension({ withStore: true });
+  quiet.openTab(9);
+  quiet.api.setBatch({ status: 'COMPLETED', queue: [] });
+  quiet.api.pingWorker();
+  await new Promise(r => setTimeout(r, 0));
+  check('a finished batch sends no heartbeat at all', Object.keys(await quiet.watch.read()).length === 0);
 }
 
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);

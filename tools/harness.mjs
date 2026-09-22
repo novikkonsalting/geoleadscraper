@@ -23,6 +23,11 @@ const element = {
 export async function loadExtension({ withStore = false } = {}) {
   const storage = {};
   const listeners = [];
+  // The crash watcher lives in the service worker and acts on tabs and alarms,
+  // so both have to exist here for it to be testable at all.
+  const alarmListeners = [];
+  const openTabs = new Set();
+  const reloaded = [];
 
   // Import the IndexedDB polyfill before the DOM shim exists: it installs onto
   // `window` when it finds one, and our `window` is a stub the store cannot see.
@@ -75,6 +80,14 @@ export async function loadExtension({ withStore = false } = {}) {
         if (!kept && !answered) respond(undefined);
       },
     },
+    alarms: {
+      create() {},
+      onAlarm: { addListener: fn => alarmListeners.push(fn) },
+    },
+    tabs: {
+      async get(id) { if (!openTabs.has(id)) throw new Error(`No tab with id: ${id}`); return { id }; },
+      async reload(id) { if (!openTabs.has(id)) throw new Error(`No tab with id: ${id}`); reloaded.push(id); },
+    },
     storage: { local: {
       async get(keys) { const out = {}; for (const k of [].concat(keys)) if (k in storage) out[k] = structuredClone(storage[k]); return out; },
       async set(obj) { Object.assign(storage, structuredClone(obj)); },
@@ -86,7 +99,7 @@ export async function loadExtension({ withStore = false } = {}) {
   run(read('src/shared-record.js'));
   run(read('src/shared-entities.js'));
 
-  if (withStore) run(read('src/store-worker.js'));
+  if (withStore) { run(read('src/store-worker.js')); run(read('src/watch-worker.js')); }
 
   // Replace the module's bootstrap with a probe that publishes its internals.
   const module_ = read('src/yandex-module.js').replace(
@@ -110,6 +123,13 @@ export async function loadExtension({ withStore = false } = {}) {
       setState: s => { state = { ...state, ...s }; },
       setHeartbeat: v => { heartbeat = v; },
       setConfig: patch => Object.assign(CFG, patch),
+      pingWorker,
+      // Whether a collection loop actually exists. A page reload leaves the
+      // persisted state saying RUNNING with nothing behind it.
+      hasLoop: () => !!loopPromise,
+      dropLoop: () => { loopPromise = null; },
+      // A loop that exists but never turns - what a real stall looks like.
+      parkLoop: () => { loopPromise = new Promise(() => {}); },
     };\n`);
   if (!module_.includes('globalThis.__gls')) throw new Error('could not neutralise the module bootstrap for testing');
   // The module starts a 1s UI ticker at load time. Under Node that is a real
@@ -128,5 +148,15 @@ export async function loadExtension({ withStore = false } = {}) {
     postFromPage: data => globalThis.window.postMessage(data),
     setDocumentStateView: text => { globalThis.document.querySelector = sel => String(sel).includes('state-view') ? { textContent: text } : null; },
     setCardFetcher: fn => { globalThis.window.__glsYandexFetch = fn; },
+    watch: globalThis.GLSWatch,
+    // The tab the crash watcher can see, and what it did to it.
+    openTab: id => openTabs.add(id),
+    closeTab: id => openTabs.delete(id),
+    reloadedTabs: reloaded,
+    fireAlarm: name => Promise.all(alarmListeners.map(fn => fn({ name }))),
+    // A heartbeat as the content script sends it, from a named tab.
+    heartbeat: (tabId, payload) => {
+      for (const listener of listeners) listener({ type: 'GLS_ALIVE', payload }, { tab: { id: tabId } }, () => {});
+    },
   };
 }

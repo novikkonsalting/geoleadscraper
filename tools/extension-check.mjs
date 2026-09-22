@@ -62,6 +62,17 @@ try {
   });
   check('IndexedDB works in the real service worker',
     store.stats.rawUnique === 1 && store.put.inserted === 1, JSON.stringify(store));
+
+  // The crash watcher only helps if it is actually running in the worker and
+  // Chrome accepted its alarm - a permission it does not have would fail here
+  // and nowhere else.
+  const watch = await worker.evaluate(async () => ({
+    loaded: typeof globalThis.GLSWatch?.sweep,
+    alarm: !!(await chrome.alarms.get('gls-tab-watch')),
+    canReloadTabs: typeof chrome.tabs?.reload,
+  }));
+  check('the crash watcher is live in the worker, with its alarm registered',
+    watch.loaded === 'function' && watch.alarm && watch.canReloadTabs === 'function', JSON.stringify(watch));
 } finally {
   await context.close();
 }
