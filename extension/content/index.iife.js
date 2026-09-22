@@ -1182,7 +1182,16 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
   const headerIndex = (headers,key) => headers.findIndex(h => aliases[key].map(normalize).includes(normalize(h)));
   const parseBatchCsv = text => {
     const rows=parseDelimited(text); if(rows.length<2) throw new Error('CSV пустой или не содержит строк с запросами.');
-    const headers=rows[0], qi=headerIndex(headers,'query'); if(qi<0){const nh=headers.map(normalize);if(nh.includes('primary_source')||nh.includes('selection_rule'))throw new Error('Это CSV со списком официальных источников. Его не нужно загружать в GeoLeadScraper: Yandex BATCH принимает только файл с колонкой query/запрос.');throw new Error('В CSV не найдена обязательная колонка query (или «запрос»).');}
+    const headers=rows[0], nh=headers.map(normalize);
+    // A RAW export also has a source_query column, so without this check it
+    // would be accepted as a query list and turn into a queue of thousands.
+    if(nh.includes('place_id')||nh.includes('maps_url'))
+      throw new Error('Это выгрузка RAW, а не список запросов. Загрузите её кнопкой «IMPORT RAW CSV».');
+    const qi=headerIndex(headers,'query');
+    if(qi<0){
+      if(nh.includes('primary_source')||nh.includes('selection_rule'))throw new Error('Это CSV со списком официальных источников. Его не нужно загружать в GeoLeadScraper: Yandex BATCH принимает только файл с колонкой query/запрос.');
+      throw new Error('В CSV не найдена обязательная колонка query (или «запрос»).');
+    }
     const di=headerIndex(headers,'district'), gi=headerIndex(headers,'group'), ci=headerIndex(headers,'category');
     const out=[], seen=new Set();
     rows.slice(1).forEach((r,i)=>{
@@ -1212,7 +1221,13 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     const rows=parseDelimited(text); if(rows.length<2) throw new Error('RAW CSV пустой или не содержит строк данных.');
     const headers=rows[0].map(x=>String(x||'').replace(/^\uFEFF/,'').trim()), hm=new Map(headers.map((h,i)=>[normalize(h),i]));
     const cell=(row,name)=>{const i=hm.get(normalize(name));return i==null?'':String(row[i]||'').trim();};
-    if(!['place_id','maps_url','title'].some(x=>hm.has(x))) throw new Error('Это не RAW CSV GeoLeadScraper: не найдены place_id/maps_url/title.');
+    if(!['place_id','maps_url','title'].some(x=>hm.has(x))){
+      // The two file buttons sit next to each other and the two CSV kinds look
+      // alike, so say which one this is rather than only what is missing.
+      if(hm.has('query')||hm.has('запрос'))
+        throw new Error('Это список запросов, а не выгрузка RAW. Загрузите его кнопкой «ЗАГРУЗИТЬ CSV СО СПИСКОМ ЗАПРОСОВ».');
+      throw new Error('Это не RAW CSV GeoLeadScraper: не найдены колонки place_id, maps_url и title. Нужен файл, выгруженный кнопкой EXPORT RAW.');
+    }
     const recordsFor=row=>{
       const raw=cell(row,'source_records');
       if(raw){try{const x=JSON.parse(raw);if(Array.isArray(x))return x.map(v=>({district:String(v?.district||''),group:String(v?.group||''),category:String(v?.category||''),query:String(v?.query||'')})).filter(v=>v.query||v.district||v.group||v.category);}catch{}}
@@ -1609,12 +1624,12 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     const file=batch.fileName?`<div style="margin-top:4px;font-size:11px;word-break:break-word">Файл: ${esc(batch.fileName)}</div>`:'';
     const err=batch.error?`<div style="margin-top:6px;color:#a16207;font-size:11px;word-break:break-word">${esc(batch.error)}</div>`:'';
     let buttons='';
-    if(idle)buttons=btn('ЗАГРУЗИТЬ CSV СО СПИСКОМ ЗАПРОСОВ','batch-file')+btn('IMPORT RAW CSV','batch-raw-file');
-    if(ready)buttons=btn('ЗАГРУЗИТЬ ДРУГОЙ CSV','batch-file')+btn('IMPORT RAW CSV','batch-raw-file')+btn(`START RAW BATCH (${batch.queue.length})`,'batch-start');
+    if(idle)buttons=btn('ЗАГРУЗИТЬ CSV СО СПИСКОМ ЗАПРОСОВ','batch-file')+btn('IMPORT RAW CSV — ДОБАВИТЬ ВЫГРУЗКУ EXPORT RAW','batch-raw-file');
+    if(ready)buttons=btn('ЗАГРУЗИТЬ ДРУГОЙ CSV СО СПИСКОМ ЗАПРОСОВ','batch-file')+btn('IMPORT RAW CSV — ДОБАВИТЬ ВЫГРУЗКУ EXPORT RAW','batch-raw-file')+btn(`START RAW BATCH (${batch.queue.length})`,'batch-start');
     if(running)buttons=btn('PAUSE BATCH','batch-pause')+btn('STOP BATCH','batch-stop');
     if(paused||action)buttons=btn('RESUME BATCH','batch-resume')+btn('STOP BATCH','batch-stop');
     if(finished||error){
-      buttons+=btn('IMPORT RAW CSV','batch-raw-file');
+      buttons+=btn('IMPORT RAW CSV — ДОБАВИТЬ ВЫГРУЗКУ EXPORT RAW','batch-raw-file');
       if(batch.uniqueCount){
         buttons+=btn(`EXPORT RAW (${batch.uniqueCount})`,'batch-export-raw');
         if(filterRunning)buttons+=btn('ОСТАНОВИТЬ ФИЛЬТРАЦИЮ','batch-filter-stop');
@@ -1639,9 +1654,11 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     };
     panel.querySelectorAll('[data-gls-action]').forEach(b=>b.addEventListener('click',()=>actions[b.dataset.glsAction]?.()));
     const input=panel.querySelector('#gls-batch-file');
-    if(input)input.addEventListener('change',async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{await loadBatchText(await file.text(),file.name);}catch(err){await patchBatch({status:BATCH.ERROR,error:err?.message||String(err)});}});
+    // A file the loader refuses says so in the error line. It must not flip the
+    // batch into ERROR: nothing was read, and the registry is untouched.
+    if(input)input.addEventListener('change',async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{await loadBatchText(await file.text(),file.name);}catch(err){await patchBatch({error:`${file.name}: ${err?.message||String(err)}`});}});
     const rawInput=panel.querySelector('#gls-raw-file');
-    if(rawInput)rawInput.addEventListener('change',async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{await loadRawText(await file.text(),file.name);}catch(err){await patchBatch({status:BATCH.ERROR,error:err?.message||String(err)});}});
+    if(rawInput)rawInput.addEventListener('change',async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{await loadRawText(await file.text(),file.name);}catch(err){await patchBatch({error:`${file.name}: ${err?.message||String(err)}`});}});
 
   };
 

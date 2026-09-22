@@ -354,6 +354,39 @@ check('what was not topped up stays queued for the next run',
   (await fast.api.storeTotals()).pendingPriority === 4,
   `${(await fast.api.storeTotals()).pendingPriority}`);
 
+// --- the two CSV kinds must not be confusable --------------------------------
+section('wrong file in the wrong button');
+{
+  const files = await loadExtension({ withStore: true });
+  // fake-indexeddb is global, so a fresh load still sees the previous section's rows.
+  await files.api.store('clearRaw');
+  const { readFileSync: read } = await import('node:fs');
+  const queries = read(new URL('../data/queries/04_konkovo.csv', import.meta.url), 'utf8');
+  const rawExport = [
+    'source_district,source_group,source_category,title,address,phone,website,maps_url,source,source_query,source_queries_count,source_records,place_id,categories,rating,review_count,latitude,longitude',
+    '"Коньково","Общепит","Ресторан","Орг","адрес","","","https://yandex.ru/maps/org/x/1/","yandex_maps","рестораны район Коньково Москва","1","[]","1","Ресторан","4","10","55.64","37.53"',
+  ].join('\r\n');
+
+  // A query list fed to IMPORT RAW - exactly what happened on a real run.
+  const asRaw = await files.api.loadRawText(queries, '04_konkovo.csv').then(() => null, e => e.message);
+  check('a query list rejected by IMPORT RAW says which button to use',
+    /ЗАГРУЗИТЬ CSV СО СПИСКОМ ЗАПРОСОВ/.test(asRaw || ''), asRaw);
+
+  // And the reverse, which used to be worse: a RAW export has a source_query
+  // column, so it was accepted as a query list and became a huge queue.
+  const asQueries = await files.api.loadBatchText(rawExport, 'RAW_ALL.csv').then(() => null, e => e.message);
+  check('a RAW export is not accepted as a query list',
+    /IMPORT RAW CSV/.test(asQueries || ''), asQueries);
+
+  check('a refused file leaves the registry alone',
+    (await files.api.storeTotals()).uniqueCount === 0);
+  await files.api.loadBatchText(queries, '04_konkovo.csv');
+  check('the right file in the right button still works',
+    files.api.getBatch().queue.length === 11, `${files.api.getBatch().queue.length}`);
+  await files.api.loadRawText(rawExport, 'RAW_ALL.csv');
+  check('and so does the RAW export', (await files.api.storeTotals()).uniqueCount === 1);
+}
+
 // --- collecting district by district ----------------------------------------
 section('several districts in one registry');
 {
