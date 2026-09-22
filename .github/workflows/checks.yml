@@ -1,0 +1,41 @@
+name: checks
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+
+    env:
+      # Only the non-browser checks run here; skip the ~300MB browser download
+      # that the playwright package fetches on install.
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # extension/content/index.iife.js, extension/service-worker.js and
+      # extension/page-hook.js are generated from vendor/ + src/ but committed,
+      # because Chrome loads extension/ unpacked. Rebuilding must be a no-op:
+      # a diff here means someone edited the artifact instead of the source.
+      - name: Built artifacts match their sources
+        run: |
+          node tools/build.mjs
+          git diff --exit-code -- extension/
+
+      - name: Smoke tests
+        run: node tools/smoke-test.mjs
+
+      - name: Geo boundary quality
+        run: node tools/geo-check.mjs

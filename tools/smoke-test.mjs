@@ -653,5 +653,25 @@ section('a stalled run ends instead of waiting forever');
   check('a collector that is working is left alone', stall.api.getState().status === 'RUNNING');
 }
 
+// --- release consistency ----------------------------------------------------
+// The version lives in four places and has drifted before: package-lock.json and
+// the README title stayed on 1.10.3 through two releases. Chrome loads the
+// manifest, so that one is authoritative.
+section('release consistency');
+{
+  const { dirname, join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const readRoot = rel => readFileSync(join(root, rel), 'utf8');
+  const manifest = JSON.parse(readRoot('extension/manifest.json')).version;
+
+  check('package.json states the manifest version',
+    JSON.parse(readRoot('package.json')).version === manifest, manifest);
+  check('package-lock.json states the manifest version',
+    JSON.parse(readRoot('package-lock.json')).version === manifest, manifest);
+  check('the README title states the manifest version',
+    readRoot('README.md').split('\n', 1)[0].includes(`v${manifest}`), manifest);
+}
+
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);
 process.exit(failures ? 1 : 0);
