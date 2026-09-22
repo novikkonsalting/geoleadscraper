@@ -1344,6 +1344,10 @@
     if(running)buttons=btn('PAUSE BATCH','batch-pause')+btn('STOP BATCH','batch-stop');
     if(paused||action)buttons=btn('RESUME BATCH','batch-resume')+btn('STOP BATCH','batch-stop');
     if(finished||error){
+      // The way on to the next district. Without it the only button that led
+      // anywhere from a finished batch was RESET, which deletes the registry -
+      // the exact thing the panel tells you not to do.
+      buttons+=btn('ЗАГРУЗИТЬ CSV СО СПИСКОМ ЗАПРОСОВ — СЛЕДУЮЩИЙ РАЙОН','batch-file');
       buttons+=btn('IMPORT RAW CSV — ДОБАВИТЬ ВЫГРУЗКУ EXPORT RAW','batch-raw-file');
       if(batch.uniqueCount){
         buttons+=btn(`EXPORT RAW (${batch.uniqueCount})`,'batch-export-raw');

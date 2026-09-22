@@ -370,6 +370,38 @@ check('what was not topped up stays queued for the next run',
   (await fast.api.storeTotals()).pendingPriority === 4,
   `${(await fast.api.storeTotals()).pendingPriority}`);
 
+// --- there must always be a way on to the next district ----------------------
+section('panel buttons');
+{
+  const panel = await loadExtension({ withStore: true });
+  await panel.api.store('clearRaw');
+  const actions = () => [...panel.api.batchHtml().matchAll(/data-gls-action="([^"]+)"/g)].map(m => m[1]);
+
+  check('an empty panel offers both loaders',
+    actions().includes('batch-file') && actions().includes('batch-raw-file'), actions().join());
+
+  await panel.api.loadRawText([
+    'source_district,source_group,source_category,title,address,phone,website,maps_url,source,source_query,source_queries_count,source_records,place_id,categories,rating,review_count,latitude,longitude',
+    '"Академический","Общепит","Ресторан","Орг","адрес","","","https://yandex.ru/maps/org/x/1/","yandex_maps","рестораны Академический район Москва","1","[]","1","Ресторан","4","10","55.687149","37.572078"',
+  ].join('\r\n'), 'RAW_4_rayona.csv');
+
+  // This is the state a user is in after importing a registry: the batch reads
+  // as finished, and the next district's queries still have to get in somehow.
+  const after = actions();
+  check('after importing a registry the queries loader is still offered',
+    after.includes('batch-file'), after.join());
+  check('and so is the importer, the export and the filter',
+    ['batch-raw-file', 'batch-export-raw', 'batch-filter'].every(a => after.includes(a)), after.join());
+  check('RESET is not the only way forward',
+    after.filter(a => a !== 'batch-reset').length > 0);
+
+  await panel.api.loadBatchText('district;group;category;query\nКотловка;Общепит;Ресторан;рестораны район Котловка Москва\n', '05_kotlovka.csv');
+  check('loading the next district gives the start button',
+    actions().includes('batch-start'), actions().join());
+  check('and the registry survived the switch',
+    (await panel.api.storeTotals()).uniqueCount === 1);
+}
+
 // --- the two CSV kinds must not be confusable --------------------------------
 section('wrong file in the wrong button');
 {
