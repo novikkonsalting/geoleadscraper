@@ -121,8 +121,18 @@ check('filter wrote FINAL to the store', filtered.finalCount === filtered.filter
 const finalRows = await api.store('listFinal', { offset: 0, limit: 500 });
 check('FINAL carries the computed validations, not a hardcoded MATCH',
   finalRows.every(r => r.category_validation && r.district_validation && r.final_status === 'ACCEPTED'));
-check('an organisation outside the requested district is rejected',
-  filtered.filterStats.rejectedDistrict === 1, JSON.stringify(filtered.filterStats));
+// The query's district says where we looked, not where the organisation is.
+// Re-filing it under the district its coordinates fall in is the whole point:
+// rejecting it instead cost 773 organisations of the twelve-district run.
+check('an organisation found under another district is re-filed, not rejected',
+  filtered.filterStats.reassigned === 1 && filtered.filterStats.rejectedDistrict === 0 && filtered.filterStats.rejectedOutside === 0,
+  JSON.stringify(filtered.filterStats));
+{
+  const moved = finalRows.find(r => r.district_validation === 'REASSIGNED');
+  check('and it carries the district the map put it in, not the one the query named',
+    !!moved && moved.detected_district && moved.detected_district !== moved.matched_source_district,
+    JSON.stringify(moved && { d: moved.detected_district, q: moved.matched_source_district }));
+}
 
 // --- geo --------------------------------------------------------------------
 section('offline geography');
@@ -186,8 +196,9 @@ check('org without coordinates is NO_COORDINATES, not a district mismatch',
 // ЮЗАО under such a record and they were accepted into Гагаринский.
 const free = await api.evaluateItem({ latitude: 55.6875, longitude: 37.5730, categories: 'Ресторан' },
   { district: '', group: '', category: '', query: 'свободный запрос' });
-check('a record with no district never admits an organisation',
-  !free.accept && free.districtValidation === 'NO_DISTRICT_IN_QUERY', JSON.stringify(free));
+check('a record with no district is placed by its coordinates, not thrown away',
+  free.accept && free.districtValidation === 'NO_DISTRICT_IN_QUERY' && free.detectedDistrict === 'Академический',
+  JSON.stringify(free));
 const outsideOkrug = await api.evaluateItem(
   { latitude: 55.661689, longitude: 37.481469, categories: 'Кальян-бар, ресторан, бар' },
   { district: '', group: '', category: '', query: 'кафе Гагаринский район Москва' });
@@ -313,14 +324,18 @@ await fast.api.filterBatch();
 const f = fast.api.getBatch();
 check('filtering runs to completion on its own', f.filterStatus === 'COMPLETED' && f.filterPhase === 'DONE',
   `${f.filterStatus}/${f.filterPhase} ${f.filterError || ''}`);
-check('cards were fetched only for the two rows that needed them',
-  asked.length === 2 && !asked.some(u => u.includes('6000001')) && !asked.some(u => u.includes('6000003')),
-  JSON.stringify(asked));
+check('no card is fetched for a row that already has everything',
+  asked.length === 3 && !asked.some(u => u.includes('6000001')), JSON.stringify(asked));
 check('the organisation with an empty list entry is recovered into FINAL',
-  f.filterStats.accepted === 3, JSON.stringify(f.filterStats));
-check('the one in another district is still rejected on geography',
-  f.filterStats.rejectedDistrict === 1, JSON.stringify(f.filterStats));
-check('the card counters are reported', f.filterStats.cardsQueued === 2 && f.filterStats.cardsLoaded === 2,
+  f.filterStats.accepted === 4, JSON.stringify(f.filterStats));
+check('the one found under another ЮЗАО district is re-filed there, not discarded',
+  f.filterStats.reassigned === 1 && f.filterStats.rejectedDistrict === 0, JSON.stringify(f.filterStats));
+// It came back from the card with no categories at all. That is missing data,
+// not a wrong category, so it is kept and marked as unverified instead of
+// vanishing from the register.
+check('a row that still has no categories is kept as ACCEPTED_UNVERIFIED',
+  f.filterStats.unverified === 1, JSON.stringify(f.filterStats));
+check('the card counters are reported', f.filterStats.cardsQueued === 3 && f.filterStats.cardsLoaded === 3,
   JSON.stringify(f.filterStats));
 const recovered = await fast.api.store('getRawByPlaceId', { place_id: '6000004' });
 check('the recovered row keeps its provenance', fast.shared.sourceRecords(recovered).length === 1);
@@ -333,7 +348,7 @@ check('nothing is left waiting', (await fast.api.storeTotals()).pendingPriority 
 asked.length = 0;
 await fast.api.filterBatch();
 check('re-filtering asks for no further cards', asked.length === 0, JSON.stringify(asked));
-check('and reaches the same register', fast.api.getBatch().filterStats.accepted === 3);
+check('and reaches the same register', fast.api.getBatch().filterStats.accepted === 4);
 // The upstream extractor reports the coordinate pair in Yandex's order. The
 // collect path repairs it; the top-up path used to skip the repair and wrote
 // latitude 37.x / longitude 55.x into the registry.
@@ -400,6 +415,11 @@ section('panel buttons');
     actions().includes('batch-start'), actions().join());
   check('and the registry survived the switch',
     (await panel.api.storeTotals()).uniqueCount === 1);
+  // The exports belong to the registry, not to the query list loaded on top of
+  // it: losing them on the next district is how an accumulated register gets
+  // exported only at the very end, or not at all.
+  check('and the RAW export is still reachable with a new query list loaded',
+    actions().includes('batch-export-raw'), actions().join());
 }
 
 // --- the two CSV kinds must not be confusable --------------------------------
@@ -651,6 +671,113 @@ section('a stalled run ends instead of waiting forever');
   stall.api.beat();
   await stall.api.watchdogTick();
   check('a collector that is working is left alone', stall.api.getState().status === 'RUNNING');
+}
+
+// --- discards, yields and export shape --------------------------------------
+// The twelve-district acceptance run ended with 922 organisations in FINAL and
+// no way to find out where the rest had gone; 773 of them were inside ЮЗАО.
+section('nothing disappears without a reason');
+{
+  const reject = await loadExtension({ withStore: true });
+  const akademicheskiy = { district: 'Академический', group: 'Общепит', category: 'Ресторан', query: 'рестораны Академический район Москва' };
+  reject.api.setBatch({
+    status: 'COMPLETED', fileName: 'q.csv', completedQueries: 1,
+    queue: [{ id: 'q1', ...akademicheskiy, status: 'COMPLETED' }],
+  });
+  await reject.api.store('clearRaw');
+  await reject.api.store('putRaw', {
+    record: akademicheskiy,
+    records: [
+      // inside the queried district
+      { place_id: '7000001', title: 'Свой', maps_url: 'https://yandex.ru/maps/org/a/7000001/', detail_level: 'CARD',
+        categories: 'Ресторан', phone: '+7 (495) 000-00-01 доб. 205', website: 'x', opening_hours: 'x',
+        latitude: 55.687149, longitude: 37.572078 },
+      // inside ЮЗАО but in a different district - a lead, not a mistake
+      { place_id: '7000002', title: 'Соседний', maps_url: 'https://yandex.ru/maps/org/b/7000002/', detail_level: 'CARD',
+        categories: 'Ресторан', phone: '+7 (495) 000-00-01', website: 'x', opening_hours: 'x',
+        latitude: 55.691872, longitude: 37.561413 },
+      // outside ЮЗАО altogether - the one thing geography may reject
+      { place_id: '7000003', title: 'Чужой округ', maps_url: 'https://yandex.ru/maps/org/c/7000003/', detail_level: 'CARD',
+        categories: 'Ресторан', phone: '+7 (495) 000-00-01', website: 'x', opening_hours: 'x',
+        latitude: 55.661689, longitude: 37.481469 },
+      // right category, wrong trade
+      { place_id: '7000004', title: 'Автосервис', maps_url: 'https://yandex.ru/maps/org/d/7000004/', detail_level: 'CARD',
+        categories: 'Автосервис', phone: '+7 (495) 000-00-09', website: 'x', opening_hours: 'x',
+        latitude: 55.687149, longitude: 37.572078 },
+    ],
+  });
+  await reject.api.filterBatch();
+  const st = reject.api.getBatch().filterStats;
+  check('only what falls outside ЮЗАО is rejected on geography',
+    st.rejectedOutside === 1 && st.rejectedDistrict === 0 && st.accepted === 2 && st.reassigned === 1,
+    JSON.stringify(st));
+  const discarded = await reject.api.store('listRejected', { offset: 0, limit: 100 });
+  check('every discard is kept with the reason it was discarded',
+    discarded.length === 2 && discarded.every(r => r.final_status === 'REJECTED' && r.exclude_reason),
+    JSON.stringify(discarded.map(r => r.exclude_reason)));
+  check('the reason names the rule that rejected it',
+    discarded.some(r => /OUTSIDE_UZAO/.test(r.exclude_reason)) && discarded.some(r => /CATEGORY_MISMATCH/.test(r.exclude_reason)),
+    JSON.stringify(discarded.map(r => r.exclude_reason)));
+  check('the panel can offer the export because the count is in the totals',
+    (await reject.api.storeTotals()).rejectedCount === 2);
+  // Re-filtering must not stack yesterday's discards on top of today's.
+  await reject.api.filterBatch();
+  check('re-filtering replaces the discards instead of appending to them',
+    (await reject.api.storeTotals()).rejectedCount === 2);
+
+  const d = await reject.api.finalDecorations();
+  const rows = await reject.api.store('listFinal', { offset: 0, limit: 100 });
+  const decorated = rows.map(r => reject.api.decorateFinal(r, d));
+  const withExt = decorated.find(r => r.place_id === '7000001');
+  check('an extension is split out of the number you dial',
+    withExt.phone === '+7 (495) 000-00-01' && withExt.phone_ext === '205', JSON.stringify([withExt.phone, withExt.phone_ext]));
+  check('rows sharing one hotline are counted together, not silently deduped',
+    decorated.every(r => r.chain_size === 2 && r.chain_flag === ''),
+    JSON.stringify(decorated.map(r => [r.title, r.chain_flag, r.chain_size])));
+  // A pair is a coincidence at the shipped threshold; the flag is what tells a
+  // mailing that 39 of its addresses answer on one switchboard.
+  reject.api.setConfig({ CHAIN_MIN_BRANCHES: 2 });
+  check('and are flagged once there are enough of them to be a chain',
+    rows.map(r => reject.api.decorateFinal(r, d)).every(r => r.chain_flag === 'CHAIN'));
+  reject.api.setConfig({ CHAIN_MIN_BRANCHES: 3 });
+}
+
+section('a short result list is not a finished one');
+{
+  const yield_ = await loadExtension({ withStore: true });
+  yield_.api.setConfig({ LOW_YIELD_UNIQUE: 15 });
+  // The list scrolled, so the old rule saw nothing wrong: 70 of the 130
+  // queries closed exactly here with five organisations and the export still
+  // reported export_queries_low_yield = 0.
+  yield_.api.setState({ status: 'RUNNING', uniqueCount: 5, scrolledEver: true, shortListPushes: 3 });
+  await yield_.api.complete('scroll stabilized');
+  check('a query that scrolled and still found five is flagged',
+    /5 организаций/.test(yield_.api.getState().warning || ''), yield_.api.getState().warning);
+
+  yield_.api.setState({ status: 'RUNNING', uniqueCount: 40, scrolledEver: true, warning: null });
+  await yield_.api.complete('scroll stabilized');
+  check('a query with a real harvest is not', !yield_.api.getState().warning);
+
+  await yield_.api.recordQueryYield({ district: 'Черёмушки', query: 'кафе Черёмушки Москва' }, 5, 'мало');
+  await yield_.api.recordQueryYield({ district: 'Черёмушки', query: 'бары Черёмушки Москва' }, 5, 'мало');
+  await yield_.api.recordQueryYield({ district: 'Академический', query: 'кафе Академический район Москва' }, 312, null);
+  check('the ledger counts every query of every district, not just the last CSV loaded',
+    (await yield_.api.yieldSummary()).total === 3 && (await yield_.api.yieldSummary()).lowCount === 2);
+  // The user re-ran Коньково after a bad first pass; the ledger has to forget
+  // the bad run rather than report it forever.
+  await yield_.api.recordQueryYield({ district: 'Черёмушки', query: 'кафе Черёмушки Москва' }, 120, null);
+  check('re-running a query replaces its entry instead of adding one',
+    (await yield_.api.yieldSummary()).total === 3 && (await yield_.api.yieldSummary()).lowCount === 1);
+
+  yield_.api.setBatch({ status: 'COMPLETED', completedQueries: 3, queue: [{ id: 'a', status: 'COMPLETED' }] });
+  const meta = await yield_.api.rawExportMeta();
+  check('the RAW export counts queries over the registry it actually contains',
+    meta.meta.export_queries_total === 3, JSON.stringify(meta.meta));
+  check('and reports the short ones instead of a clean COMPLETED',
+    meta.full === false && meta.meta.export_queries_low_yield === 1 && /_WITH_WARNINGS$/.test(meta.meta.export_batch_status),
+    JSON.stringify(meta.meta));
+  check('a phone with no extension is left exactly as it is',
+    yield_.api.splitExt('+7 (495) 000-00-01').phone === '+7 (495) 000-00-01' && yield_.api.splitExt('').ext === '');
 }
 
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);

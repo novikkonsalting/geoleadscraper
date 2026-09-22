@@ -14,8 +14,8 @@
 // so MV3 shutting it down mid-run is harmless.
 ;(() => {
   const DB_NAME = 'geoleadscraper';
-  const DB_VERSION = 3;
-  const RAW = 'raw', FINAL = 'final', META = 'meta';
+  const DB_VERSION = 4;
+  const RAW = 'raw', FINAL = 'final', META = 'meta', REJECTED = 'rejected';
   const TOTALS = 'totals';
   const { stableKey, mergeRecord, sourceRecords } = globalThis.GLSRecord;
 
@@ -40,6 +40,11 @@
         // the card arrives, so the index drains as the pass runs.
         if (!raw.indexNames.contains('enrich_priority')) raw.createIndex('enrich_priority', 'enrich_priority', { unique: false });
         if (!db.objectStoreNames.contains(FINAL)) db.createObjectStore(FINAL, { keyPath: 'key' });
+        // Why the discards are kept: a row that did not reach FINAL is not
+        // noise, it is an answer that has to be auditable. Without it the
+        // only way to ask "where did those 800 organisations go" is to
+        // re-run the whole collection.
+        if (!db.objectStoreNames.contains(REJECTED)) db.createObjectStore(REJECTED, { keyPath: 'key' });
         if (!db.objectStoreNames.contains(META)) db.createObjectStore(META, { keyPath: 'id' });
       };
       req.onsuccess = () => {
@@ -61,7 +66,7 @@
     tx.onabort = () => reject(tx.error || new Error('Транзакция хранилища прервана.'));
   });
 
-  const readTotals = store => promise(store.get(TOTALS)).then(t => t || { id: TOTALS, rawUnique: 0, rawSourceHits: 0, finalCount: 0 });
+  const readTotals = store => promise(store.get(TOTALS)).then(t => t || { id: TOTALS, rawUnique: 0, rawSourceHits: 0, finalCount: 0, rejectedCount: 0 });
 
   // Writes a batch of collected cards under one transaction, merging each into
   // whatever is already stored for the same key and keeping the totals exact.
@@ -193,6 +198,18 @@
     return { finalCount: totals.finalCount };
   };
 
+  const putRejected = async ({ records }) => {
+    const db = await openDb();
+    const tx = db.transaction([REJECTED, META], 'readwrite');
+    const store = tx.objectStore(REJECTED), meta = tx.objectStore(META);
+    await Promise.all((records || []).map(row => promise(store.put({ ...row, key: row.key || stableKey(row) }))));
+    const [totals, rejectedCount] = await Promise.all([readTotals(meta), promise(store.count())]);
+    totals.rejectedCount = rejectedCount;
+    await promise(meta.put(totals));
+    await done(tx);
+    return { rejectedCount: totals.rejectedCount };
+  };
+
   const clearStores = async names => {
     const db = await openDb();
     const tx = db.transaction([...names, META], 'readwrite');
@@ -200,6 +217,7 @@
     const [totals] = await Promise.all([readTotals(meta), ...names.map(name => promise(tx.objectStore(name).clear()))]);
     if (names.includes(RAW)) { totals.rawUnique = 0; totals.rawSourceHits = 0; }
     if (names.includes(FINAL)) totals.finalCount = 0;
+    if (names.includes(REJECTED)) totals.rejectedCount = 0;
     await promise(meta.put(totals));
     await done(tx);
     return { cleared: names };
@@ -209,7 +227,7 @@
   // available as a repair path if a crash ever leaves them inconsistent.
   const recount = async () => {
     const db = await openDb();
-    const tx = db.transaction([RAW, FINAL, META], 'readwrite');
+    const tx = db.transaction([RAW, FINAL, REJECTED, META], 'readwrite');
     const raw = tx.objectStore(RAW);
     let rawUnique = 0, rawSourceHits = 0;
     await new Promise((resolve, reject) => {
@@ -223,8 +241,11 @@
         cursor.continue();
       };
     });
-    const finalCount = await promise(tx.objectStore(FINAL).count());
-    const totals = { id: TOTALS, rawUnique, rawSourceHits, finalCount };
+    const [finalCount, rejectedCount] = await Promise.all([
+      promise(tx.objectStore(FINAL).count()),
+      promise(tx.objectStore(REJECTED).count()),
+    ]);
+    const totals = { id: TOTALS, rawUnique, rawSourceHits, finalCount, rejectedCount };
     await promise(tx.objectStore(META).put(totals));
     await done(tx);
     return totals;
@@ -240,7 +261,7 @@
       countPendingPriority(raw),
     ]);
     await done(tx);
-    return { rawUnique: totals.rawUnique, rawSourceHits: totals.rawSourceHits, finalCount: totals.finalCount, pendingDetail, pendingPriority };
+    return { rawUnique: totals.rawUnique, rawSourceHits: totals.rawSourceHits, finalCount: totals.finalCount, rejectedCount: totals.rejectedCount || 0, pendingDetail, pendingPriority };
   };
 
   // Pages over the rows still waiting for a card fetch. Driven off the index,
@@ -270,13 +291,15 @@
     getRawByPlaceId,
     listRaw: args => page(RAW, args || {}),
     listFinal: args => page(FINAL, args || {}),
+    listRejected: args => page(REJECTED, args || {}),
     putFinal,
+    putRejected,
     enrichRaw,
     flagForEnrich,
     listPendingDetail,
     listPendingDetailFinal,
-    clearRaw: () => clearStores([RAW, FINAL]),
-    clearFinal: () => clearStores([FINAL]),
+    clearRaw: () => clearStores([RAW, FINAL, REJECTED]),
+    clearFinal: () => clearStores([FINAL, REJECTED]),
     recount,
     stats,
   };

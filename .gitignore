@@ -8,3 +8,6 @@ dist/geoleadscraper-project-*.zip
 # Repaired user exports produced by tools/fix-swapped-coords.mjs.
 # These are collected business data, not project files.
 dist/*.csv
+
+# Registers rebuilt from a user's own RAW export. Same reason.
+out/

@@ -3,6 +3,11 @@
 
   const AUTO_KEY = 'yandex_auto_collect_v5';
   const BATCH_KEY = 'yandex_batch_collect_v6';
+  // Per-query yields for the whole registry, not just the batch in the panel.
+  // A RAW export spans every district ever collected, so the counters printed
+  // into it have to span the same thing: the twelve-district file reported
+  // "11 queries, 0 low yield" because it could only see the last CSV loaded.
+  const YIELD_KEY = 'gls_query_yield_v1';
   const GEO_KEY = 'yandex_uzao_district_boundaries_v5';
   const AUTO = {
     IDLE: 'IDLE', RUNNING: 'RUNNING', PAUSED: 'PAUSED', COMPLETED: 'COMPLETED',
@@ -45,6 +50,12 @@
     // navigation forever because the page shows a different string is how a
     // batch turns into an endless reload loop.
     MAX_NAV_ATTEMPTS: 2,
+    // How many rows sharing a phone or a name make the group a chain rather
+    // than a coincidence. Two "Магнит" in one district is a chain already.
+    CHAIN_MIN_BRANCHES: 3,
+    // How many times a query that harvested fewer than LOW_YIELD_UNIQUE
+    // organisations is pushed to load more before its result is believed.
+    SHORT_LIST_PUSHES: 3,
     // Rough size of the Yandex Maps map pane, used to pick a zoom that fits a
     // district into the view.
     VIEW_WIDTH_PX: 620,
@@ -57,6 +68,7 @@
     uniqueCount: 0,
     duplicatesCount: 0,
     noProgressCycles: 0,
+    shortListPushes: 0,
     iteration: 0,
     scrollTop: 0,
     scrollHeight: 0,
@@ -89,6 +101,8 @@
     navAttempts: 0,
     uniqueCount: 0,
     sourceHits: 0,
+    rejectedCount: 0,
+    lowYieldQueries: [],
     startTime: null,
     lastProgressTime: null,
     error: null,
@@ -454,23 +468,29 @@
     if(!q)return base;
     const thin=item.detail_level!=='CARD';
 
-    // A record with no district cannot place the organisation anywhere, so it
-    // must never be what lets a row into the register. Accepting on such a
-    // record is how organisations outside ЮЗАО reached a district's FINAL.
-    if(!q.district)return {...base,accept:false,districtValidation:'NO_DISTRICT_IN_QUERY'};
-
     // District first. It is decided from coordinates, which every row has, so a
-    // row in the wrong district is ruled out before its missing category could
-    // send us fetching a card we would then throw away.
+    // row outside the register's geography is ruled out before its missing
+    // category could send us fetching a card we would then throw away.
+    //
+    // The query's district is a way of finding organisations, not a statement
+    // about where they are: "кафе Черёмушки Москва" aimed at Черёмушки also
+    // returns cafés in Котловка and Обручевский, and those are leads, not
+    // mistakes. Rejecting them cost 773 organisations in the twelve-district
+    // run - a quarter of everything inside ЮЗАО that the collector had already
+    // found and paid for. So an organisation whose coordinates land in a
+    // different ЮЗАО district is re-filed under that district (REASSIGNED);
+    // the only geographic grounds for rejection is falling outside ЮЗАО.
+    const requested=Object.keys(DISTRICTS).find(d=>normalize(d)===normalize(q.district||''));
     let districtPart={districtValidation:'UNKNOWN',districtQuality:'NOT_CHECKED',detectedDistrict:'',districtCandidates:[]};
-    if(Object.keys(DISTRICTS).some(d=>normalize(d)===normalize(q.district))){
+    if(requested||!q.district){
       const geo=await detectGeoDistrict(item);
       if(!geo.valid)return {...base,accept:false,districtValidation:'NO_COORDINATES',districtQuality:'NO_COORDINATES',needsCard:thin};
-      const requested=Object.keys(DISTRICTS).find(d=>normalize(d)===normalize(q.district));
-      const districtValidation=geo.district===requested?'MATCH':'MISMATCH';
-      districtPart={districtValidation,districtQuality:geo.quality,detectedDistrict:geo.district||'Вне ЮЗАО',districtCandidates:geo.candidates||[]};
-      // Settled by geography alone - no card would change this.
-      if(districtValidation!=='MATCH')return {...base,...districtPart,accept:false};
+      // Geography, and only geography, keeps foreign okrugs out. It does that
+      // whether or not the query named a district, so a record with no district
+      // is no longer a way in for organisations from outside ЮЗАО.
+      if(!geo.district)return {...base,accept:false,districtValidation:'OUTSIDE_UZAO',districtQuality:geo.quality,detectedDistrict:'Вне ЮЗАО',districtCandidates:[]};
+      const districtValidation=!requested?'NO_DISTRICT_IN_QUERY':geo.district===requested?'MATCH':'REASSIGNED';
+      districtPart={districtValidation,districtQuality:geo.quality,detectedDistrict:geo.district,districtCandidates:geo.candidates||[]};
     }else{
       const detectedDistrict=explicitDistrict(item);
       let districtValidation='UNKNOWN';
@@ -489,8 +509,15 @@
     const groupMatch=!!q.group&&groups.includes(normalize(q.group));
     const categoryValidation=!hasCategories?'NO_DATA':cm?'MATCH':groupMatch?'GROUP_MATCH':cm==null?'UNKNOWN':'MISMATCH';
     const detectedGroups=groups.map(g=>g==='общепит'?'Общепит':'Продуктовая розница');
-    if(q.category&&categoryValidation!=='MATCH'&&categoryValidation!=='GROUP_MATCH')
-      return {...base,...districtPart,accept:false,categoryValidation,detectedGroups,needsCard:categoryValidation==='NO_DATA'&&thin};
+    // No categories at all is missing data, not a wrong category. Such a row is
+    // admitted as ACCEPTED_UNVERIFIED and queued for a card fetch: the second
+    // filter pass then either confirms it or drops it on a real MISMATCH. It is
+    // never silently discarded - that is how the 70 rows whose list entry
+    // carried neither address nor categories disappeared.
+    if(q.category&&categoryValidation!=='MATCH'&&categoryValidation!=='GROUP_MATCH'&&categoryValidation!=='NO_DATA')
+      return {...base,...districtPart,accept:false,categoryValidation,detectedGroups};
+    if(categoryValidation==='NO_DATA')
+      return {...base,...districtPart,accept:true,categoryValidation,detectedGroups,needsCard:thin};
 
     return {...base,...districtPart,accept:true,categoryValidation,detectedGroups};
   };
@@ -567,6 +594,40 @@
     obs.observe(container, {childList:true, subtree:true});
     const timer = setTimeout(finish, CFG.MUTATION_TIMEOUT_MS);
   });
+
+  // A result list that stops at five organisations is almost never a district
+  // with five cafés: it is a list that was never driven to its end. Before a
+  // short run is allowed to call itself finished, the page gets pushed harder -
+  // the container is re-acquired in case the loop locked onto the wrong one,
+  // the list is thrown to its very bottom, and Yandex's own "показать ещё"
+  // control is pressed if it is there. This drives the page's own UI; it does
+  // not touch access checks, and it makes no request of its own.
+  const MORE_LABELS=['показать еще','еще','загрузить еще','показать больше','show more','load more'];
+  const clickMore = root => {
+    if(!root||!root.querySelectorAll)return false;
+    const nodes=[...root.querySelectorAll('button,a,[role="button"]')];
+    const hit=nodes.find(el=>{
+      const t=normalize(el.textContent||'');
+      return t&&t.length<=24&&MORE_LABELS.some(label=>t===label||t.startsWith(label));
+    });
+    if(!hit)return false;
+    try{hit.click();return true;}catch{return false;}
+  };
+  const pressForMore = async container => {
+    const fresh=findContainer()||container;
+    for(const el of [fresh,document.scrollingElement]){
+      if(!el)continue;
+      try{
+        el.scrollTop=Math.max(0,el.scrollHeight-el.clientHeight);
+        el.dispatchEvent(new Event('scroll',{bubbles:true}));
+        el.dispatchEvent(new WheelEvent('wheel',{bubbles:true,deltaY:800}));
+      }catch{}
+    }
+    const clicked=clickMore(fresh)||clickMore(document);
+    await waitMutation(fresh);
+    await sleep(CFG.SETTLE_MS*2);
+    return {container:fresh,clicked};
+  };
 
   const autoSnapshot = () => ({...state,seenUrls:[...seenUrls],seenPlaceIds:[...seenPlaceIds],acceptedKeys:[...acceptedKeys]});
   const writeAutoStorage = async () => {
@@ -660,11 +721,13 @@
   };
 
   const complete = async reason => {
-    // A query is only trustworthy if the result list actually moved. Ending
-    // with a handful of cards and a list that never scrolled means the page
-    // was not driven, not that Yandex ran out of results - say so instead of
-    // reporting a silent success.
-    const neverScrolled = !state.scrolledEver && state.uniqueCount < CFG.LOW_YIELD_UNIQUE;
+    // The yield itself is the signal, not how the run ended. The old rule only
+    // warned when the list had never scrolled, so a query that scrolled a
+    // little and closed with five organisations was reported as a clean
+    // success: seventy of a hundred and thirty queries did exactly that and
+    // export_queries_low_yield still read 0.
+    const lowYield = state.uniqueCount < CFG.LOW_YIELD_UNIQUE;
+    const neverScrolled = !state.scrolledEver;
     // Only a run that was cut off is suspicious. Comparing against listSeen was
     // wrong: the page hook also sees organisations from map viewport and
     // recommendation payloads, which were never part of this result list, so
@@ -673,8 +736,10 @@
     const stalled = String(reason||'').includes('watchdog');
     const warning = stalled
       ? `Сбор по этому запросу завис и был закрыт сторожевым таймером после ${state.uniqueCount} карточек. Выдача могла закончиться не полностью - повторите запрос, если нужна гарантия полноты.`
-      : neverScrolled
+      : lowYield && neverScrolled
       ? `Сбор завершился после ${state.uniqueCount} карточек, но список выдачи ни разу не прокрутился. Результат почти наверняка неполный: проверьте, что открыт список результатов Яндекс Карт, и повторите запрос.`
+      : lowYield
+      ? `Запрос дал всего ${state.uniqueCount} организаций (порог ${CFG.LOW_YIELD_UNIQUE}) даже после ${state.shortListPushes||0} попыток дозагрузить выдачу. Скорее всего список обрезан: повторите запрос вручную и сравните, сколько организаций показывает Яндекс.`
       : cutOff
         ? `Запрос остановлен по защитному таймауту после ${state.uniqueCount} карточек, выдача могла закончиться не полностью. Повторите запрос, если нужна гарантия полноты.`
         : null;
@@ -693,7 +758,7 @@
     }
     if (!container) throw new Error('Не найден scroll-container выдачи Яндекс Карт. Откройте список результатов поиска и повторите.');
     log('container found', {scrollHeight:container.scrollHeight,clientHeight:container.clientHeight});
-    let stagnant = 0, repeatedKnown = 0;
+    let stagnant = 0, repeatedKnown = 0, pushes = 0;
     await collectVisible(container, token);
     while (token === runToken) {
       beat();
@@ -748,7 +813,19 @@
       log(`scroll iteration ${state.iteration}`, {unique:state.uniqueCount,noProgress:`${state.noProgressCycles}/${CFG.NO_PROGRESS_LIMIT}`});
       const noNewFor = Date.now() - (state.lastProgressTime || started);
       if (state.noProgressCycles >= CFG.NO_PROGRESS_LIMIT && noNewFor >= CFG.MIN_NO_PROGRESS_MS && (stagnant >= CFG.STAGNANT_REQUIRED || repeatedKnown >= CFG.REPEATED_KNOWN_CYCLES_REQUIRED)) {
-        log('result list stabilized',{noProgressCycles:state.noProgressCycles,stagnant,repeatedKnown,cycleStats});
+        // A small harvest does not get to end the query on the first quiet
+        // stretch. Seventy of the hundred and thirty queries in the twelve
+        // district run closed here with exactly five organisations.
+        if (state.uniqueCount < CFG.LOW_YIELD_UNIQUE && pushes < CFG.SHORT_LIST_PUSHES) {
+          pushes++;
+          const pushed = await pressForMore(container);
+          container = pushed.container;
+          log('short list: pushing for more', {unique:state.uniqueCount, push:pushes, clickedMore:pushed.clicked});
+          stagnant = 0; repeatedKnown = 0;
+          await patchAuto({noProgressCycles:0, shortListPushes:pushes, lastProgressTime:Date.now()});
+          continue;
+        }
+        log('result list stabilized',{noProgressCycles:state.noProgressCycles,stagnant,repeatedKnown,pushes,cycleStats});
         return complete(repeatedKnown >= CFG.REPEATED_KNOWN_CYCLES_REQUIRED ? 'known-card cycle detected' : 'scroll stabilized');
       }
     }
@@ -816,9 +893,31 @@
   const stopAuto = async () => { if (![AUTO.IDLE,AUTO.COMPLETED,AUTO.STOPPED].includes(state.status)) { runToken++; await patchAuto({status:AUTO.STOPPED},true); log('stopped by user'); } };
   const resetAuto = async () => { runToken++; if(autoPersistTimer){clearTimeout(autoPersistTimer);autoPersistTimer=null;} state=blankAuto(); seenUrls.clear(); seenPlaceIds.clear(); acceptedKeys.clear(); try {await chrome.storage.local.remove(AUTO_KEY);} catch{} render(); log('reset'); };
 
+  let yieldLedger=null;
+  const loadYieldLedger = async () => {
+    if(yieldLedger)return yieldLedger;
+    try{const stored=await chrome.storage.local.get(YIELD_KEY);yieldLedger=stored?.[YIELD_KEY]&&typeof stored[YIELD_KEY]==='object'?stored[YIELD_KEY]:{};}
+    catch{yieldLedger={};}
+    return yieldLedger;
+  };
+  const yieldKeyOf = (district,query) => `${normalize(district||'')}|${normalize(query||'')}`;
+  // Re-running a query overwrites its entry, so a district collected again
+  // stops being reported as short.
+  const recordQueryYield = async (queryItem,unique,warning) => {
+    const ledger=await loadYieldLedger();
+    ledger[yieldKeyOf(queryItem.district,queryItem.query)]={district:queryItem.district||'',query:queryItem.query||'',unique,low:unique<CFG.LOW_YIELD_UNIQUE,warning:warning||'',at:Date.now()};
+    yieldLedger=ledger;
+    try{await chrome.storage.local.set({[YIELD_KEY]:ledger});}catch(e){blog('yield ledger write failed',e?.message||e);}
+  };
+  const yieldSummary = async () => {
+    const entries=Object.values(await loadYieldLedger());
+    const low=entries.filter(x=>x.low);
+    return {total:entries.length,low,lowCount:low.length};
+  };
+
   const storeTotals = async () => {
     const t=await store('stats');
-    return {uniqueCount:t.rawUnique,sourceHits:t.rawSourceHits,finalCount:t.finalCount,pendingDetail:t.pendingDetail||0,pendingPriority:t.pendingPriority||0};
+    return {uniqueCount:t.rawUnique,sourceHits:t.rawSourceHits,finalCount:t.finalCount,rejectedCount:t.rejectedCount||0,pendingDetail:t.pendingDetail||0,pendingPriority:t.pendingPriority||0};
   };
 
   let filterStop=false;
@@ -837,27 +936,87 @@
   const RAW_META_FIELDS=['export_batch_status','export_queries_total','export_queries_completed','export_queries_low_yield','export_warnings'];
   // A RAW file must be able to explain itself: a truncated or low-yield run
   // is otherwise indistinguishable from a genuinely small result set.
-  const rawExportMeta = () => {
-    const warnings=(batch.warnings||[]).map(w=>`${w.query} → ${w.unique}`);
+  const rawExportMeta = async () => {
+    // Counted over the whole registry the file actually contains, not over the
+    // query list currently loaded in the panel.
+    const {total,low}=await yieldSummary();
+    const warnings=low.map(w=>`${w.district?w.district+': ':''}${w.query} → ${w.unique}`);
     const done=batch.queue.filter(x=>x.status==='COMPLETED').length;
-    const full=batch.status===BATCH.COMPLETED&&!warnings.length&&done===batch.queue.length;
+    const clean=batch.status===BATCH.COMPLETED&&done===batch.queue.length;
+    const full=clean&&!warnings.length;
     return {full,meta:{
-      export_batch_status:batch.status,
-      export_queries_total:batch.queue.length,
+      export_batch_status:warnings.length?`${batch.status}_WITH_WARNINGS`:batch.status,
+      export_queries_total:total||batch.queue.length,
       export_queries_completed:batch.completedQueries,
       export_queries_low_yield:warnings.length,
       export_warnings:warnings.join(' | '),
     }};
   };
   const exportBatchRaw = async () => {
-    const {full,meta}=rawExportMeta();
+    const {full,meta}=await rawExportMeta();
     await saveCsvStream(full?'geoleadscraper-yandex_maps-RAW_ALL':'geoleadscraper-yandex_maps-RAW_PARTIAL',
       [...RAW_FIELDS,...RAW_META_FIELDS],
       write => eachStored('listRaw', rows => write(rows.map(row=>({...row,...meta})))));
   };
-  const exportBatchFinal = async () => saveCsvStream('geoleadscraper-yandex_maps-FINAL_FILTERED',
-    ['matched_source_district','matched_source_group','matched_source_category','title','address','phone','website','maps_url','source','matched_source_query','matched_source_queries_count','matched_source_records','category_validation','detected_category_group','district_validation','district_quality','district_candidates','detected_district','detail_level','final_status','exclude_reason','place_id','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials'],
-    write => eachStored('listFinal', rows => write(rows)));
+  const FINAL_FIELDS=['matched_source_district','matched_source_group','matched_source_category','title','address','phone','phone_ext','website','maps_url','source','matched_source_query','matched_source_queries_count','matched_source_records','category_validation','detected_category_group','district_validation','district_quality','district_candidates','detected_district','detail_level','final_status','exclude_reason','place_id','categories','rating','review_count','latitude','longitude','opening_hours','street','photos','labels','email','phones','socials','chain_flag','chain_size','coord_duplicates'];
+
+  // "+7 (495) 123-45-67 доб. 205" is two facts in one column: a number you can
+  // dial and an extension that belongs to one person inside the organisation.
+  // Kept together they break every dialer and every mail merge.
+  const EXT_SPLIT=/\s*(?:доб\.?|добавочный|вн\.?|ext\.?|x)\s*[:№]?\s*(\d{1,6})\s*$/i;
+  const splitExt = raw => {
+    const value=String(raw||'').trim(); if(!value)return {phone:'',ext:''};
+    const m=value.match(EXT_SPLIT);
+    return m?{phone:value.slice(0,m.index).trim().replace(/[,;]\s*$/,''),ext:m[1]}:{phone:value,ext:''};
+  };
+  const phoneDigits = raw => String(raw||'').replace(/\D/g,'').replace(/^8(?=\d{10}$)/,'7');
+
+  // A hotline shared by 39 rows is one lead, not 39. The rows stay - a branch
+  // is still a real address - but the register has to say which of them are
+  // branches of the same chain, or the first mailing goes 39 times to the same
+  // call centre.
+  const finalDecorations = async () => {
+    const byPhone=new Map(), byName=new Map(), byPoint=new Map();
+    const bump=(map,key)=>{ if(key)map.set(key,(map.get(key)||0)+1); };
+    const nameKey=row=>normalize(row.title);
+    const pointKey=row=>{
+      const lat=Number(row.latitude), lon=Number(row.longitude);
+      // Four decimals is about ten metres - inside one building. Tighter than
+      // that and Yandex's own re-geocoding of the same card reads as two
+      // different places; looser and neighbouring branches start to merge.
+      return Number.isFinite(lat)&&Number.isFinite(lon)?`${lat.toFixed(4)},${lon.toFixed(4)}|${normalize(row.title)}`:'';
+    };
+    await eachStored('listFinal', rows => {
+      for(const row of rows){
+        bump(byPhone,phoneDigits(splitExt(row.phone).phone));
+        bump(byName,nameKey(row));
+        bump(byPoint,pointKey(row));
+      }
+    });
+    return {byPhone,byName,byPoint,nameKey,pointKey};
+  };
+  const decorateFinal = (row,d) => {
+    const {phone,ext}=splitExt(row.phone);
+    const byPhone=d.byPhone.get(phoneDigits(phone))||0, byName=d.byName.get(d.nameKey(row))||0;
+    const chainSize=Math.max(byPhone,byName);
+    return {...row,phone,phone_ext:ext,chain_flag:chainSize>=CFG.CHAIN_MIN_BRANCHES?'CHAIN':'',chain_size:chainSize>1?chainSize:'',coord_duplicates:Math.max(0,(d.byPoint.get(d.pointKey(row))||1)-1)||''};
+  };
+  const exportBatchFinal = async () => {
+    const d=await finalDecorations();
+    await saveCsvStream('geoleadscraper-yandex_maps-FINAL_FILTERED',FINAL_FIELDS,
+      write => eachStored('listFinal', rows => write(rows.map(row=>decorateFinal(row,d)))));
+  };
+  // The discards, with the reason each one was discarded. Without this file the
+  // only answer to "why is this organisation missing" is to collect again.
+  const exportBatchRejected = async () => {
+    const totals=await storeTotals();
+    if(!totals.rejectedCount)throw new Error('Отбракованных записей нет: сначала выполните FILTER RAW → FINAL.');
+    await saveCsvStream('geoleadscraper-yandex_maps-REJECTED',FINAL_FIELDS,
+      write => eachStored('listRejected', rows => write(rows.map(row=>{
+        const {phone,ext}=splitExt(row.phone);
+        return {...row,phone,phone_ext:ext,chain_flag:'',chain_size:'',coord_duplicates:''};
+      }))));
+  };
 
   // -------- BATCH CSV --------
   const detectDelimiter = text => {
@@ -1044,10 +1203,12 @@
     try{
       const totals=await storeTotals(), q=[...batch.queue];
       const queryWarning=state.warning||null;
+      await recordQueryYield(current,state.uniqueCount,queryWarning);
+      const lowYieldQueries=(await yieldSummary()).low;
       q[batch.currentIndex]={...current,status:queryWarning?'COMPLETED_LOW':'COMPLETED',uniqueFound:state.uniqueCount,error:null,warning:queryWarning};
       const warnings=queryWarning?[...(batch.warnings||[]),{query:current.query,unique:state.uniqueCount,message:queryWarning}]:(batch.warnings||[]);
       const next=batch.currentIndex+1, completed=batch.completedQueries+1;if(next<q.length)q[next]={...q[next],status:'RUNNING',error:null};
-      batch={...batch,queue:q,warnings,...totals,completedQueries:completed,currentIndex:next,navAttempts:0,lastProgressTime:Date.now(),error:null,status:next>=q.length?BATCH.COMPLETED:BATCH.RUNNING,filterStatus:'IDLE',filterPhase:'IDLE',filterError:null,filterStartedAt:null,filterCompletedAt:null,filterStats:blankBatch().filterStats};
+      batch={...batch,queue:q,warnings,lowYieldQueries,...totals,completedQueries:completed,currentIndex:next,navAttempts:0,lastProgressTime:Date.now(),error:null,status:next>=q.length?BATCH.COMPLETED:BATCH.RUNNING,filterStatus:'IDLE',filterPhase:'IDLE',filterError:null,filterStartedAt:null,filterCompletedAt:null,filterStats:blankBatch().filterStats};
       await persistBatch();blog('query completed',{index:next,query:current.query,queryRawUnique:state.uniqueCount,totalRawUnique:totals.uniqueCount});
       if(next>=q.length){blog('completed',{queries:completed,unique:totals.uniqueCount});return;}
       await resetAuto();const n=q[next];blog('next query',{index:next+1,query:n.query,district:n.district});location.assign(buildSearchUrl(n.query,n.district));
@@ -1075,7 +1236,8 @@
     await resetAuto();
     try{await store('clearRaw');}catch(e){blog('store clear failed',e?.message||e);}
     batch=blankBatch();
-    try{await chrome.storage.local.remove(BATCH_KEY);}catch{}
+    yieldLedger={};
+    try{await chrome.storage.local.remove([BATCH_KEY,YIELD_KEY]);}catch{}
     render();blog('reset');
   };
 
@@ -1088,7 +1250,7 @@
     await store('clearFinal');
     await eachStored('listRaw', async rows => {
       if(filterStop)return;
-      const accepted=[],forEnrich=[];
+      const accepted=[],rejected=[],forEnrich=[];
       for(const item of rows){
         const records=sourceRecords(item),decisions=[];
         for(const record of records)decisions.push({record,decision:await evaluateItem(item,record)});
@@ -1107,30 +1269,44 @@
           const candidates=uniqueJoined(uniqueAccepted.flatMap(x=>x.decision.districtCandidates||[]));
           const ambiguous=uniqueAccepted.some(x=>x.decision.districtQuality==='AMBIGUOUS');
           if(ambiguous)stats.ambiguousDistrict++;
-          accepted.push({...item,category_validation:categoryValidation,detected_category_group:detectedGroups,district_validation:districtValidation,district_quality:districtQuality,district_candidates:ambiguous?candidates:'',detected_district:detected,matched_source_district:uniqueJoined(matched.map(x=>x.district)),matched_source_group:uniqueJoined(matched.map(x=>x.group)),matched_source_category:uniqueJoined(matched.map(x=>x.category)),matched_source_query:uniqueJoined(matched.map(x=>x.query)),matched_source_records:JSON.stringify(matched),matched_source_queries_count:matched.length,final_status:'ACCEPTED',exclude_reason:''});
+          // Filed under the district its coordinates fall in, however it was
+          // found. REASSIGNED is not a defect to hide: it is the honest record
+          // that the query said one district and the map said another, and the
+          // map won.
+          const reassigned=uniqueAccepted.some(x=>x.decision.districtValidation==='REASSIGNED');
+          const unverified=uniqueAccepted.every(x=>x.decision.categoryValidation==='NO_DATA');
+          if(reassigned)stats.reassigned++;
+          if(unverified)stats.unverified++;
+          accepted.push({...item,category_validation:categoryValidation,detected_category_group:detectedGroups,district_validation:districtValidation,district_quality:districtQuality,district_candidates:ambiguous?candidates:'',detected_district:detected,matched_source_district:uniqueJoined(matched.map(x=>x.district)),matched_source_group:uniqueJoined(matched.map(x=>x.group)),matched_source_category:uniqueJoined(matched.map(x=>x.category)),matched_source_query:uniqueJoined(matched.map(x=>x.query)),matched_source_records:JSON.stringify(matched),matched_source_queries_count:matched.length,final_status:unverified?'ACCEPTED_UNVERIFIED':'ACCEPTED',exclude_reason:''});
           stats.accepted++;stats.matchedSourceRecords+=matched.length;
           // Accepted but incomplete: it belongs in the register now, and the
           // missing contact fields are worth one card fetch.
           if(needsCardData(item)){stats.incomplete++;forEnrich.push(item.key);}
         }else{
-          const hasCategoryProblem=decisions.some(x=>!!x.record.category&&x.decision.categoryValidation!=='MATCH');
+          const outside=decisions.some(x=>x.decision.districtValidation==='OUTSIDE_UZAO');
           const hasNoCoords=decisions.some(x=>x.decision.districtValidation==='NO_COORDINATES');
           const hasDistrictProblem=decisions.some(x=>!!x.record.district&&x.decision.districtValidation==='MISMATCH');
+          const hasCategoryProblem=decisions.some(x=>!!x.record.category&&x.decision.categoryValidation!=='MATCH');
           // Undecidable only because the card has not been fetched yet.
-          const undecided=decisions.some(x=>x.decision.needsCard)&&!hasDistrictProblem;
-          // Not a single record names a district, so the row cannot be placed.
-          const noCriteria=decisions.length>0&&decisions.every(x=>x.decision.districtValidation==='NO_DISTRICT_IN_QUERY');
-          if(noCriteria)stats.rejectedNoCriteria++;
-          else if(hasDistrictProblem)stats.rejectedDistrict++;
-          else if(undecided){stats.needsCard++;forEnrich.push(item.key);}
-          else if(hasNoCoords)stats.rejectedNoCoords++;
-          else if(hasCategoryProblem)stats.rejectedCategory++;
-          else stats.rejectedUnknown++;
+          const undecided=decisions.some(x=>x.decision.needsCard)&&!outside&&!hasDistrictProblem;
+          let reason='';
+          if(outside){stats.rejectedOutside++;reason='OUTSIDE_UZAO: координаты вне границ ЮЗАО';}
+          else if(hasDistrictProblem){stats.rejectedDistrict++;reason='DISTRICT_MISMATCH: адрес не совпал с районом запроса';}
+          else if(undecided){stats.needsCard++;forEnrich.push(item.key);reason='';}
+          else if(hasNoCoords){stats.rejectedNoCoords++;reason='NO_COORDINATES: у записи нет координат';}
+          else if(hasCategoryProblem){stats.rejectedCategory++;reason='CATEGORY_MISMATCH: рубрики организации не входят в группу запроса';}
+          else if(!decisions.length){stats.rejectedNoCriteria++;reason='NO_SOURCE_RECORDS: у записи нет провенанса';}
+          else {stats.rejectedUnknown++;reason='UNKNOWN: причина не определена';}
+          // Kept, not dropped. A discarded row with its reason written down is
+          // the only way to answer "why is this organisation not in the
+          // register" without collecting the district again.
+          if(reason)rejected.push({...item,category_validation:uniqueJoined(decisions.map(x=>x.decision.categoryValidation))||'UNKNOWN',detected_category_group:uniqueJoined(decisions.flatMap(x=>x.decision.detectedGroups||[])),district_validation:uniqueJoined(decisions.map(x=>x.decision.districtValidation))||'UNKNOWN',district_quality:uniqueJoined(decisions.map(x=>x.decision.districtQuality))||'NOT_CHECKED',district_candidates:'',detected_district:uniqueJoined(decisions.map(x=>x.decision.detectedDistrict||'').filter(Boolean)),matched_source_district:'',matched_source_group:'',matched_source_category:'',matched_source_query:'',matched_source_records:'[]',matched_source_queries_count:0,final_status:'REJECTED',exclude_reason:reason});
         }
         stats.processed++;
       }
       if(forEnrich.length)await store('flagForEnrich',{keys:forEnrich});
       const written=accepted.length?await store('putFinal',{records:accepted}):null;
+      if(rejected.length)await store('putRejected',{records:rejected});
       await patchBatch({filterStats:{...stats},finalCount:written?written.finalCount:batch.finalCount});
       await sleep(0);
     });
@@ -1173,7 +1349,7 @@
     if(!totals.uniqueCount)throw new Error('RAW-реестр пуст. Сначала выполните BATCH.');
     if(batch.filterStatus==='RUNNING')return;
     filterStop=false;
-    const blank=()=>({processed:0,total:totals.uniqueCount,accepted:0,rejectedCategory:0,rejectedDistrict:0,rejectedNoCoords:0,rejectedUnknown:0,rejectedNoCriteria:0,needsCard:0,incomplete:0,ambiguousDistrict:0,matchedSourceRecords:0,cardsQueued:0,cardsDone:0,cardsLoaded:0,cardsFailed:0});
+    const blank=()=>({processed:0,total:totals.uniqueCount,accepted:0,reassigned:0,unverified:0,rejectedCategory:0,rejectedDistrict:0,rejectedOutside:0,rejectedNoCoords:0,rejectedUnknown:0,rejectedNoCriteria:0,needsCard:0,incomplete:0,ambiguousDistrict:0,matchedSourceRecords:0,cardsQueued:0,cardsDone:0,cardsLoaded:0,cardsFailed:0});
     let stats=blank();
     await patchBatch({filterStatus:'RUNNING',filterPhase:'FILTERING',filterError:null,filterStartedAt:Date.now(),filterCompletedAt:null,filterStats:stats,finalCount:0});
     blog('filter started',{rawUnique:stats.total});
@@ -1325,7 +1501,10 @@
         filter+=bar(cardPct)+`<div style="margin-top:4px">Карточек ${fs.cardsDone} / ${fs.cardsQueued} · загружено ${fs.cardsLoaded}, не удалось ${fs.cardsFailed}</div>`;
       }
       if(filterCompleted||filterError||batch.filterStatus==='STOPPED')filter+=`<div style="display:grid;grid-template-columns:1fr auto;gap:3px 10px;margin-top:6px">`+
-        `<span>RAW</span><b>${fs.total}</b><span>Принято в FINAL</span><b>${fs.accepted}</b><span>Отсеяно районом</span><b>${fs.rejectedDistrict}</b><span>Отсеяно категорией</span><b>${fs.rejectedCategory}</b><span>Без координат</span><b>${fs.rejectedNoCoords||0}</b><span>Без района в запросе</span><b>${fs.rejectedNoCriteria||0}</b><span>Неопределённо</span><b>${fs.rejectedUnknown}</b>`+
+        `<span>RAW</span><b>${fs.total}</b><span>Принято в FINAL</span><b>${fs.accepted}</b>`+
+        (fs.reassigned?`<span>Переназначен район по координатам</span><b>${fs.reassigned}</b>`:'')+
+        (fs.unverified?`<span>Принято без рубрик (ACCEPTED_UNVERIFIED)</span><b>${fs.unverified}</b>`:'')+
+        `<span>Вне ЮЗАО</span><b>${fs.rejectedOutside||0}</b><span>Отсеяно районом (по адресу)</span><b>${fs.rejectedDistrict}</b><span>Отсеяно категорией</span><b>${fs.rejectedCategory}</b><span>Без координат</span><b>${fs.rejectedNoCoords||0}</b><span>Без провенанса</span><b>${fs.rejectedNoCriteria||0}</b><span>Неопределённо</span><b>${fs.rejectedUnknown}</b>`+
         (fs.cardsDone?`<span>Догружено карточек</span><b>${fs.cardsLoaded} из ${fs.cardsQueued}</b>`:'')+
         (fs.ambiguousDistrict?`<span>Район определён неоднозначно</span><b>${fs.ambiguousDistrict}</b>`:'')+
       `</div>`;
@@ -1334,13 +1513,19 @@
       filter+=`<div style="margin-top:5px;color:#555">Фильтрация сама догружает карточки тем организациям, у которых в выдаче не хватило телефона, сайта, часов или категории — и только им.</div>`;
       filter+='</div>';
     }
-    const warnList=(batch.warnings||[]);
+    const warnList=(batch.lowYieldQueries||batch.warnings||[]);
     const warnBlock=warnList.length?`<div style="margin-top:8px;padding:8px;border:1px solid #f0c674;border-radius:7px;background:#fffbeb;font-size:11px;color:#7c5a00"><b>НЕПОЛНЫЙ СБОР: ${warnList.length} запрос(ов)</b>${warnList.slice(0,6).map(w=>`<div style="margin-top:3px;word-break:break-word">• ${esc(w.query)} → ${w.unique} карточек</div>`).join('')}${warnList.length>6?`<div style="margin-top:3px">…ещё ${warnList.length-6}</div>`:''}<div style="margin-top:4px">EXPORT RAW пометит файл как RAW_PARTIAL.</div></div>`:'';
     const file=batch.fileName?`<div style="margin-top:4px;font-size:11px;word-break:break-word">Файл: ${esc(batch.fileName)}</div>`:'';
     const err=batch.error?`<div style="margin-top:6px;color:#a16207;font-size:11px;word-break:break-word">${esc(batch.error)}</div>`:'';
     let buttons='';
     if(idle)buttons=btn('ЗАГРУЗИТЬ CSV СО СПИСКОМ ЗАПРОСОВ','batch-file')+btn('IMPORT RAW CSV — ДОБАВИТЬ ВЫГРУЗКУ EXPORT RAW','batch-raw-file');
-    if(ready)buttons=btn('ЗАГРУЗИТЬ ДРУГОЙ CSV СО СПИСКОМ ЗАПРОСОВ','batch-file')+btn('IMPORT RAW CSV — ДОБАВИТЬ ВЫГРУЗКУ EXPORT RAW','batch-raw-file')+btn(`START RAW BATCH (${batch.queue.length})`,'batch-start');
+    // Loading the next district's query list must not hide what is already in
+    // the registry: the exports belong to the registry, not to the batch that
+    // happens to be loaded.
+    if(ready)buttons=btn('ЗАГРУЗИТЬ ДРУГОЙ CSV СО СПИСКОМ ЗАПРОСОВ','batch-file')+btn('IMPORT RAW CSV — ДОБАВИТЬ ВЫГРУЗКУ EXPORT RAW','batch-raw-file')+btn(`START RAW BATCH (${batch.queue.length})`,'batch-start')
+      +(batch.uniqueCount?btn(`EXPORT RAW (${batch.uniqueCount})`,'batch-export-raw'):'')
+      +(batch.finalCount?btn(`EXPORT FINAL (${batch.finalCount})`,'batch-export-final'):'')
+      +(batch.rejectedCount?btn(`EXPORT REJECTED (${batch.rejectedCount})`,'batch-export-rejected'):'');
     if(running)buttons=btn('PAUSE BATCH','batch-pause')+btn('STOP BATCH','batch-stop');
     if(paused||action)buttons=btn('RESUME BATCH','batch-resume')+btn('STOP BATCH','batch-stop');
     if(finished||error){
@@ -1354,6 +1539,7 @@
         if(filterRunning)buttons+=btn('ОСТАНОВИТЬ ФИЛЬТРАЦИЮ','batch-filter-stop');
         else buttons+=btn(filterCompleted||filterError||batch.filterStatus==='STOPPED'?'ПЕРЕФИЛЬТРОВАТЬ RAW → FINAL':'FILTER RAW → FINAL','batch-filter');
         if(batch.finalCount)buttons+=btn(`EXPORT FINAL (${batch.finalCount})`,'batch-export-final');
+        if(batch.rejectedCount)buttons+=btn(`EXPORT REJECTED (${batch.rejectedCount})`,'batch-export-rejected');
       }
       if(!filterRunning)buttons+=btn(`RESET BATCH — УДАЛИТЬ RAW (${batch.uniqueCount})`,'batch-reset','color:#a16207');
       buttons+=`<div style="margin-top:6px;font-size:11px;color:#555">Загрузка следующего CSV с запросами реестр не трогает — районы копятся в одном хранилище. Удаляет данные только RESET BATCH.</div>`;
@@ -1366,7 +1552,7 @@
     panel.innerHTML=singleHtml()+batchHtml();
     const actions={
       'auto-start':startAuto,'auto-pause':pauseAuto,'auto-resume':resumeAuto,'auto-stop':stopAuto,'auto-reset':resetAuto,
-      'batch-start':()=>startBatch().catch(batchFatal),'batch-pause':pauseBatch,'batch-resume':resumeBatch,'batch-stop':stopBatch,'batch-reset':()=>resetBatch().catch(batchFatal),'batch-export-raw':()=>exportBatchRaw().catch(batchFatal),'batch-filter':()=>filterBatch().catch(batchFatal),'batch-export-final':()=>exportBatchFinal().catch(batchFatal),
+      'batch-start':()=>startBatch().catch(batchFatal),'batch-pause':pauseBatch,'batch-resume':resumeBatch,'batch-stop':stopBatch,'batch-reset':()=>resetBatch().catch(batchFatal),'batch-export-raw':()=>exportBatchRaw().catch(batchFatal),'batch-filter':()=>filterBatch().catch(batchFatal),'batch-export-final':()=>exportBatchFinal().catch(batchFatal),'batch-export-rejected':()=>exportBatchRejected().catch(batchFatal),
       'batch-file':()=>panel.querySelector('#gls-batch-file')?.click(),
       'batch-raw-file':()=>panel.querySelector('#gls-raw-file')?.click(),
       'batch-filter-stop':stopFilter,
@@ -1426,6 +1612,9 @@
     }catch(e){blog('restore failed',e?.message||e);}
     // The store is the source of truth for the totals, not the snapshot.
     try{batch={...batch,...await storeTotals()};}catch(e){blog('store unavailable',e?.message||e);}
+    // Low-yield queries are a property of the registry, so they survive loading
+    // the next district's query list.
+    try{batch={...batch,lowYieldQueries:(await yieldSummary()).low};}catch(e){blog('yield ledger unavailable',e?.message||e);}
     render();
 
     // Batch owns navigation while active. Do not apply the single-query mismatch stop rule.
