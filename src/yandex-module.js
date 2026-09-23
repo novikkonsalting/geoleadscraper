@@ -311,10 +311,18 @@
     'общепит':['ресторан','кафе','кофейн','столов','быстрое питание','фастфуд','пиццер','суши','роллы','бар','паб','чайхан','закусоч','пекарн','кондитер','торты на заказ','кулинар','доставка еды','шаурм','бургер','блинная','пельмен','пышеч','чебуреч','донер','шашлы','хинкал','кейтеринг','food court','фуд-корт','бистро','трактир','таверна','кальян-бар','караоке-клуб','банкетный зал'],
     'продуктовая розница':['магазин продуктов','продуктовый магазин','продукты питания','супермаркет','минимаркет','гипермаркет','магазин мяса','колбас','мясная продукция','рыба и морепродукт','рыбный магазин','магазин овощей','овощи и фрукт','алкогольные напитки','винный магазин','винотека','магазин разливных напитков','магазин чая','магазин кофе','чай и кофе','магазин сыр','сырная лавка','кондитерские изделия','фермерск','продукты пчеловодства','диетическ','орех','сухофрукт','специи','бакалея','мука и крупы','хлебобул','магазин мороженого','магазин здорового питания','магазин кулинарии','молочн'],
   };
+  // Yandex writes the speciality into the middle of the rubric - "магазин
+  // азиатских продуктов", "магазин фермерских продуктов" - so the literal token
+  // "магазин продуктов" misses a grocer that is plainly a grocer.
+  const GROUP_PATTERNS={
+    'продуктовая розница':[/магазин[^,;|]{0,32}продукт/,/продуктов[^,;|]{0,12}магазин/],
+  };
   const categoryGroups = categoriesRaw => {
     const actual=normalize(categoriesRaw);
     if(!actual)return [];
-    return Object.entries(GROUP_TOKENS).filter(([,tokens])=>includesAny(actual,tokens)).map(([group])=>group);
+    return Object.entries(GROUP_TOKENS)
+      .filter(([group,tokens])=>includesAny(actual,tokens)||(GROUP_PATTERNS[group]||[]).some(re=>re.test(actual)))
+      .map(([group])=>group);
   };
   const DISTRICTS={
     'Академический':['академический район','район академический'],
@@ -488,6 +496,20 @@
     return {item:normalized,district:best.d,valid:true,quality:'AMBIGUOUS',candidates:matches};
   };
 
+  // The groups this register covers. Taken from the provenance of the whole
+  // registry rather than from the query list currently loaded, because a
+  // register accumulated over twelve districts outlives any one CSV.
+  let registerGroups=new Set();
+  const collectRegisterGroups = async () => {
+    const found=new Set();
+    for(const item of batch.queue) if(item?.group) found.add(normalize(item.group));
+    await eachStored('listRaw', rows => {
+      for(const row of rows) for(const record of sourceRecords(row)) if(record?.group) found.add(normalize(record.group));
+    });
+    registerGroups=found;
+    return found;
+  };
+
   const currentBatchQuery = () => [BATCH.RUNNING,BATCH.PAUSED,BATCH.USER_ACTION_REQUIRED].includes(batch.status) ? batch.queue[batch.currentIndex] || null : null;
   const evaluateItem = async (item,forcedQuery=null) => {
     const q=forcedQuery||currentBatchQuery();
@@ -533,15 +555,21 @@
     const hasCategories=!!String(item.categories||'').trim();
     const cm=categoryMatch(q.category,item.categories);
     const groups=categoryGroups(item.categories);
+    // Which query found an organisation says nothing about what it is. A
+    // Пятёрочка surfaced by a фастфуд query is filed by Yandex as "Супермаркет,
+    // магазин продуктов" - продуктовая розница, a group this register covers,
+    // so it is a lead. Checking only the finding query's own group threw it
+    // away, which is the district defect over again in the category dimension.
     const groupMatch=!!q.group&&groups.includes(normalize(q.group));
-    const categoryValidation=!hasCategories?'NO_DATA':cm?'MATCH':groupMatch?'GROUP_MATCH':cm==null?'UNKNOWN':'MISMATCH';
+    const otherGroupMatch=!groupMatch&&groups.some(g=>registerGroups.has(g));
+    const categoryValidation=!hasCategories?'NO_DATA':cm?'MATCH':groupMatch?'GROUP_MATCH':otherGroupMatch?'OTHER_GROUP_MATCH':cm==null?'UNKNOWN':'MISMATCH';
     const detectedGroups=groups.map(g=>g==='общепит'?'Общепит':'Продуктовая розница');
     // No categories at all is missing data, not a wrong category. Such a row is
     // admitted as ACCEPTED_UNVERIFIED and queued for a card fetch: the second
     // filter pass then either confirms it or drops it on a real MISMATCH. It is
     // never silently discarded - that is how the 70 rows whose list entry
     // carried neither address nor categories disappeared.
-    if(q.category&&categoryValidation!=='MATCH'&&categoryValidation!=='GROUP_MATCH'&&categoryValidation!=='NO_DATA')
+    if(q.category&&!['MATCH','GROUP_MATCH','OTHER_GROUP_MATCH','NO_DATA'].includes(categoryValidation))
       return {...base,...districtPart,accept:false,categoryValidation,detectedGroups};
     if(categoryValidation==='NO_DATA')
       return {...base,...districtPart,accept:true,categoryValidation,detectedGroups,needsCard:thin};
@@ -1472,6 +1500,8 @@
     try{
       const geo=await ensureGeo();
       await patchBatch({geoInfo:{source:geo.source,quality:geo.quality||null}});
+      const groups=await collectRegisterGroups();
+      blog('register groups',{groups:[...groups]});
 
       await runFilterPass(stats);
 

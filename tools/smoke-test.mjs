@@ -944,5 +944,50 @@ section('losing the service worker is not losing the run');
     link.api.getBatch().status === 'ERROR');
 }
 
+// --- the query that found it does not say what it is --------------------------
+// A Пятёрочка filed by Yandex as "Супермаркет, кофе с собой, магазин продуктов"
+// was surfaced by a фастфуд query and thrown out, because the group was read
+// off the query instead of off the organisation - the district defect again,
+// one dimension over.
+section('the register covers both groups, whoever found the row');
+{
+  const both = await loadExtension({ withStore: true });
+  const REGISTER = ['Общепит', 'Продуктовая розница'];
+  both.api.setRegisterGroups(REGISTER.map(g => g.toLowerCase()));
+  const byFastfood = { district: 'Черёмушки', group: 'Общепит', category: 'Фастфуд', query: 'фастфуд Черёмушки Москва' };
+  const pyaterochka = { latitude: 55.6706, longitude: 37.5651, categories: 'Супермаркет, кофе с собой, магазин продуктов', detail_level: 'CARD' };
+  const verdict = await both.api.evaluateItem(pyaterochka, byFastfood);
+  check('a supermarket found by a fast-food query is a lead, not a mistake',
+    verdict.accept && verdict.categoryValidation === 'OTHER_GROUP_MATCH', JSON.stringify(verdict));
+  check('and the register says honestly which group it came in on',
+    verdict.detectedGroups.includes('Продуктовая розница'), JSON.stringify(verdict.detectedGroups));
+
+  // The widening stops at the register's own groups.
+  both.api.setRegisterGroups(['общепит']);
+  check('with only Общепит in the register the same row stays out',
+    !(await both.api.evaluateItem(pyaterochka, byFastfood)).accept);
+  both.api.setRegisterGroups(REGISTER.map(g => g.toLowerCase()));
+  check('a perfumery is still not food, whichever query found it',
+    !(await both.api.evaluateItem({ latitude: 55.6706, longitude: 37.5651, categories: 'Магазин парфюмерии и косметики', detail_level: 'CARD' }, byFastfood)).accept);
+
+  // "магазин азиатских продуктов" is a grocer with its speciality in the middle.
+  check('a grocer keeps its group when the rubric names what it sells',
+    both.api.categoryGroups('Магазин азиатских продуктов').includes('продуктовая розница'),
+    JSON.stringify(both.api.categoryGroups('Магазин азиатских продуктов')));
+  check('and a shop that is not one does not gain it',
+    !both.api.categoryGroups('Магазин бытовой техники').includes('продуктовая розница'));
+
+  // The groups come from the whole registry, not from the CSV loaded on top.
+  await both.api.store('clearRaw');
+  await both.api.store('putRaw', {
+    record: { district: 'Черёмушки', group: 'Продуктовая розница', category: 'Супермаркет', query: 'супермаркеты Черёмушки Москва' },
+    records: [{ place_id: '8000001', title: 'Лента', categories: 'Супермаркет', latitude: 55.6706, longitude: 37.5651 }],
+  });
+  both.api.setBatch({ queue: [{ id: 'q', district: 'Ясенево', group: 'Общепит', category: 'Кафе', query: 'кафе Ясенево Москва' }] });
+  const collected = await both.api.collectRegisterGroups();
+  check('both groups are found - the loaded list and the registry behind it',
+    collected.has('общепит') && collected.has('продуктовая розница'), JSON.stringify([...collected]));
+}
+
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);
 process.exit(failures ? 1 : 0);

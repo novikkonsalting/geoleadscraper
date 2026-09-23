@@ -134,6 +134,7 @@ export async function loadExtension({ withStore = false } = {}) {
       setHeartbeat: v => { heartbeat = v; },
       setConfig: patch => Object.assign(CFG, patch),
       pingWorker, continueBatch, isTransientLink, reloadCount, failRun, batchFatal, pendingFrom,
+      categoryGroups, collectRegisterGroups, setRegisterGroups: g => { registerGroups = new Set(g); },
       // Whether a collection loop actually exists. A page reload leaves the
       // persisted state saying RUNNING with nothing behind it.
       hasLoop: () => !!loopPromise,
