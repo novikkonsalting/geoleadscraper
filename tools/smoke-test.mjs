@@ -862,5 +862,87 @@ section('a crashed page must not need a human')
   check('a finished batch sends no heartbeat at all', Object.keys(await quiet.watch.read()).length === 0);
 }
 
+// --- a lost line to the extension ---------------------------------------------
+// "Could not establish connection. Receiving end does not exist." killed a
+// batch after thirty queries and twelve hours. The worker always comes back;
+// the registry was never in danger.
+section('losing the service worker is not losing the run');
+{
+  const link = await loadExtension({ withStore: true });
+  const LOST = 'Could not establish connection. Receiving end does not exist.';
+  check('the classic wake failure is recognised as transient', link.api.isTransientLink(LOST));
+  check('so is an extension reload orphaning the page',
+    link.api.isTransientLink('Extension context invalidated.'));
+  check('a real storage error is not',
+    !link.api.isTransientLink('Хранилище не ответило за 20 с (putRaw).'));
+
+  link.api.setBatch({
+    status: 'RUNNING', fileName: 'DOSBOR.csv', currentIndex: 3,
+    queue: [
+      { id: 'a', query: 'q1', status: 'COMPLETED' }, { id: 'b', query: 'q2', status: 'COMPLETED_LOW' },
+      { id: 'c', query: 'q3', status: 'COMPLETED' }, { id: 'd', query: 'q4', status: 'RUNNING' },
+      { id: 'e', query: 'q5', status: 'PENDING' },
+    ],
+  });
+  const reloadsBefore = globalThis.location.reloads;
+  await link.api.batchFatal(new Error(LOST));
+  check('the batch stays RUNNING instead of dying',
+    link.api.getBatch().status === 'RUNNING', link.api.getBatch().status);
+  check('and the page is scheduled to reload, which is the only cure for a dead link',
+    link.api.reloadCount() === 1);
+  await new Promise(r => setTimeout(r, 1600));
+  check('the reload actually happens', globalThis.location.reloads === reloadsBefore + 1);
+
+  // A page that cannot recover has to stop, or it reloads for ever.
+  for (let i = 0; i < 10; i++) await link.api.batchFatal(new Error(LOST));
+  check('the reload budget is bounded',
+    link.api.reloadCount() === link.api.CFG.MAX_RECOVERY_RELOADS, `${link.api.reloadCount()}`);
+  check('and once it runs out the error is reported honestly',
+    link.api.getBatch().status === 'ERROR', link.api.getBatch().status);
+
+  // Continuing must not mean starting over: 30 completed queries is a night.
+  check('the next query is the first one not yet done', link.api.pendingFrom() === 3);
+  await link.api.continueBatch();
+  const resumed = link.api.getBatch();
+  check('continuing picks up at that query, not at the first',
+    resumed.status === 'RUNNING' && resumed.currentIndex === 3, `${resumed.status} @${resumed.currentIndex}`);
+  check('the queries already collected keep their status',
+    resumed.queue.filter(x => x.status === 'COMPLETED').length === 2 && resumed.queue[1].status === 'COMPLETED_LOW');
+  check('and continuing clears the recovery budget for the fresh attempt',
+    link.api.reloadCount() === 0);
+
+  // The retry itself: three attempts inside a second was not enough for a
+  // worker Chrome was still starting.
+  {
+    link.api.setConfig({ STORE_RETRY_MAX_MS: 5 });
+    const real = globalThis.chrome.runtime.sendMessage;
+    let calls = 0;
+    globalThis.chrome.runtime.sendMessage = (message, callback) => {
+      calls++;
+      if (calls <= 5) {
+        globalThis.chrome.runtime.lastError = { message: LOST };
+        callback?.(undefined);
+        globalThis.chrome.runtime.lastError = null;
+        return;
+      }
+      return real(message, callback);
+    };
+    try {
+      const stats = await api_race(link.api.store('stats'), 5000);
+      check('a store call waits the worker out instead of failing on the third try',
+        calls === 6 && typeof stats.rawUnique === 'number', `calls=${calls}`);
+    } finally {
+      globalThis.chrome.runtime.sendMessage = real;
+      link.api.setConfig({ STORE_RETRY_MAX_MS: 15000 });
+    }
+  }
+
+  // An ordinary failure still stops the batch: silence would be worse.
+  link.api.setBatch({ status: 'RUNNING' });
+  await link.api.batchFatal(new Error('Не найден scroll-container выдачи Яндекс Карт.'));
+  check('a real failure is still an error, not an endless retry',
+    link.api.getBatch().status === 'ERROR');
+}
+
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);
 process.exit(failures ? 1 : 0);

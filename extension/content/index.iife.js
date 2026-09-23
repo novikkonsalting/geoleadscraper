@@ -353,6 +353,14 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     // safety timeout above lives inside the very loop that stops running.
     STORE_TIMEOUT_MS: 20000,
     STORE_ATTEMPTS: 3,
+    // A lost line to the service worker is retried far longer than an ordinary
+    // failure: the worker always comes back, and giving up costs the run.
+    STORE_ATTEMPTS_LINK: 8,
+    STORE_RETRY_MAX_MS: 15000,
+    // A content script whose extension link is gone for good can only be cured
+    // by a fresh one, which means reloading the page. Bounded, so a page that
+    // cannot recover stops trying instead of reloading forever.
+    MAX_RECOVERY_RELOADS: 5,
     CARD_FETCH_TIMEOUT_MS: 45000,
     // How long the loop may go without finishing a single cycle before the
     // watchdog rules it hung. A cycle costs seconds, so minutes mean stuck.
@@ -497,16 +505,31 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
       });
     } catch (e) { fail(e instanceof Error ? e : new Error(String(e))); }
   });
+  // Chrome failing to wake the service worker ("Could not establish connection.
+  // Receiving end does not exist."), and an extension reload orphaning the
+  // content script, both look like this. Neither means anything was lost: the
+  // registry is in IndexedDB on the other side of that line, and the worker
+  // comes back. A twelve-hour run must not die because one message missed it.
+  const TRANSIENT_LINK = /receiving end does not exist|could not establish connection|extension context invalidated|message port closed|no matching signature/i;
+  const isTransientLink = e => TRANSIENT_LINK.test(e?.message || String(e || ''));
+
   // Every store operation is keyed and idempotent - reads return the same row,
   // writes merge on the same key - so a retry can only repeat work, never
   // corrupt the registry. A woken worker answers the second attempt.
   const store = async (op, payload) => {
     let last = null;
-    for (let attempt = 1; attempt <= CFG.STORE_ATTEMPTS; attempt++) {
+    for (let attempt = 1; ; attempt++) {
       try { return await askStore(op, payload); }
       catch (e) {
         last = e;
-        if (attempt < CFG.STORE_ATTEMPTS) { log('store retry', {op, attempt, error: e?.message || String(e)}); await sleep(400 * attempt); }
+        const transient = isTransientLink(e);
+        const limit = transient ? CFG.STORE_ATTEMPTS_LINK : CFG.STORE_ATTEMPTS;
+        if (attempt >= limit) break;
+        // A lost link is waited out, not hammered: the worker needs a moment to
+        // start, and backing off costs seconds against hours of collection.
+        const wait = transient ? Math.min(CFG.STORE_RETRY_MAX_MS, 500 * 2 ** (attempt - 1)) : 400 * attempt;
+        log('store retry', {op, attempt, transient, wait, error: e?.message || String(e)});
+        await sleep(wait);
       }
     }
     throw last;
@@ -1170,7 +1193,32 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     }
   };
 
+  // A content script that has lost its line to the extension cannot do anything
+  // useful: everything it needs - the registry, the card fetcher - is on the
+  // other side of it. A fresh content script gets a new line, and the only way
+  // to get a fresh one is to reload the page. That is the repair, not a
+  // workaround. The counter lives in sessionStorage, which survives the reload
+  // and dies with the tab, so a page that cannot recover gives up instead of
+  // reloading in a circle; a query that completes clears it.
+  const RELOAD_GUARD='gls_recovery_reloads';
+  const reloadCount = () => { try { return Number(sessionStorage.getItem(RELOAD_GUARD)||0)||0; } catch { return 0; } };
+  const clearReloadGuard = () => { try { sessionStorage.removeItem(RELOAD_GUARD); } catch {} };
+  const recoverByReload = reason => {
+    const count = reloadCount();
+    if (count >= CFG.MAX_RECOVERY_RELOADS) return false;
+    try { sessionStorage.setItem(RELOAD_GUARD, String(count+1)); } catch {}
+    blog('lost the link to the extension, reloading the page to recover',{reason,attempt:count+1});
+    setTimeout(() => { try { location.reload(); } catch {} }, 1500);
+    return true;
+  };
+
   const failRun = async message => {
+    // Keep the batch RUNNING so the reloaded page picks the query back up.
+    if (isTransientLink(message) && batch.status === BATCH.RUNNING && recoverByReload(message)) {
+      await patchAuto({error:`Связь с расширением потеряна: ${message}. Перезагружаю страницу и продолжаю.`},true);
+      await patchBatch({error:'Связь с расширением потеряна. Перезагружаю страницу и продолжаю с этого же запроса.'});
+      return;
+    }
     await patchAuto({status:AUTO.ERROR,error:message},true);
     log('error', message);
     if (batch.status === BATCH.RUNNING) {
@@ -1497,7 +1545,12 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
   };
 
   const batchFatal = async e => {
-    const message=e?.message||String(e); await patchBatch({status:BATCH.ERROR,error:message}); blog('error',message);
+    const message=e?.message||String(e);
+    if(isTransientLink(message) && batch.status===BATCH.RUNNING && recoverByReload(message)){
+      await patchBatch({error:'Связь с расширением потеряна. Перезагружаю страницу и продолжаю с этого же запроса.'});
+      return;
+    }
+    await patchBatch({status:BATCH.ERROR,error:message}); blog('error',message);
   };
 
   const runBatchCurrent = async () => {
@@ -1557,6 +1610,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     try{
       const totals=await storeTotals(), q=[...batch.queue];
       const queryWarning=state.warning||null;
+      clearReloadGuard();
       await recordQueryYield(current,state.uniqueCount,queryWarning);
       const lowYieldQueries=(await yieldSummary()).low;
       q[batch.currentIndex]={...current,status:queryWarning?'COMPLETED_LOW':'COMPLETED',uniqueFound:state.uniqueCount,error:null,warning:queryWarning};
@@ -1567,6 +1621,24 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
       if(next>=q.length){blog('completed',{queries:completed,unique:totals.uniqueCount});return;}
       await resetAuto();const n=q[next];blog('next query',{index:next+1,query:n.query,district:n.district});location.assign(buildSearchUrl(n.query,n.district));
     }finally{batchAdvancing=false;}
+  };
+
+  // Picks a stopped or failed batch up where it left off. Without this the only
+  // way on from an error was to load the query list again - which starts at the
+  // first query and re-runs every district already collected, hours of work for
+  // nothing.
+  const DONE_STATES=['COMPLETED','COMPLETED_LOW'];
+  const pendingFrom = () => batch.queue.findIndex(x=>!DONE_STATES.includes(x.status));
+  const continueBatch = async () => {
+    if(![BATCH.ERROR,BATCH.STOPPED,BATCH.PAUSED,BATCH.USER_ACTION_REQUIRED].includes(batch.status))return;
+    const next=pendingFrom();
+    if(next<0){await patchBatch({status:BATCH.COMPLETED,error:null});return;}
+    await resetAuto();
+    clearReloadGuard();
+    const q=batch.queue.map((x,i)=>i===next?{...x,status:'RUNNING',error:null}:x);
+    await patchBatch({...await storeTotals(),status:BATCH.RUNNING,error:null,queue:q,currentIndex:next,navAttempts:0,lastProgressTime:Date.now()});
+    blog('continued',{from:next+1,of:q.length});
+    await runBatchCurrent();
   };
 
   const startBatch = async () => {
@@ -1883,6 +1955,9 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     if(running)buttons=btn('PAUSE BATCH','batch-pause')+btn('STOP BATCH','batch-stop');
     if(paused||action)buttons=btn('RESUME BATCH','batch-resume')+btn('STOP BATCH','batch-stop');
     if(finished||error){
+      // Resuming beats restarting: the queue remembers which queries are done.
+      const next=pendingFrom();
+      if(next>=0&&batch.queue.length)buttons+=btn(`ПРОДОЛЖИТЬ СБОР С ЗАПРОСА ${next+1} ИЗ ${batch.queue.length}`,'batch-continue');
       // The way on to the next district. Without it the only button that led
       // anywhere from a finished batch was RESET, which deletes the registry -
       // the exact thing the panel tells you not to do.
@@ -1906,7 +1981,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     panel.innerHTML=singleHtml()+batchHtml();
     const actions={
       'auto-start':startAuto,'auto-pause':pauseAuto,'auto-resume':resumeAuto,'auto-stop':stopAuto,'auto-reset':resetAuto,
-      'batch-start':()=>startBatch().catch(batchFatal),'batch-pause':pauseBatch,'batch-resume':resumeBatch,'batch-stop':stopBatch,'batch-reset':()=>resetBatch().catch(batchFatal),'batch-export-raw':()=>exportBatchRaw().catch(batchFatal),'batch-filter':()=>filterBatch().catch(batchFatal),'batch-export-final':()=>exportBatchFinal().catch(batchFatal),'batch-export-rejected':()=>exportBatchRejected().catch(batchFatal),
+      'batch-start':()=>startBatch().catch(batchFatal),'batch-pause':pauseBatch,'batch-resume':resumeBatch,'batch-stop':stopBatch,'batch-reset':()=>resetBatch().catch(batchFatal),'batch-continue':()=>continueBatch().catch(batchFatal),'batch-export-raw':()=>exportBatchRaw().catch(batchFatal),'batch-filter':()=>filterBatch().catch(batchFatal),'batch-export-final':()=>exportBatchFinal().catch(batchFatal),'batch-export-rejected':()=>exportBatchRejected().catch(batchFatal),
       'batch-file':()=>panel.querySelector('#gls-batch-file')?.click(),
       'batch-raw-file':()=>panel.querySelector('#gls-raw-file')?.click(),
       'batch-filter-stop':stopFilter,

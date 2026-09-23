@@ -48,6 +48,8 @@ export async function loadExtension({ withStore = false } = {}) {
     // Records navigations and lets a test emulate what Yandex actually does to
     // the URL, including rewriting the query.
     navigations: [],
+    reloads: 0,
+    reload() { this.reloads++; },
     assign(url) {
       this.navigations.push(url);
       const rewritten = globalThis.__rewriteQuery ? globalThis.__rewriteQuery(url) : url;
@@ -60,6 +62,14 @@ export async function loadExtension({ withStore = false } = {}) {
     innerWidth: 1600,
     addEventListener(type, fn) { (windowListeners[type] ||= []).push(fn); },
     postMessage(data) { for (const fn of windowListeners.message || []) fn({ source: globalThis.window, data }); },
+  };
+  // The recovery-reload guard lives here: it has to survive a reload and die
+  // with the tab, which is exactly what sessionStorage does.
+  const session = new Map();
+  globalThis.sessionStorage = {
+    getItem: k => (session.has(k) ? session.get(k) : null),
+    setItem: (k, v) => session.set(k, String(v)),
+    removeItem: k => session.delete(k),
   };
   globalThis.MutationObserver = class { observe() {} disconnect() {} };
   globalThis.getComputedStyle = () => ({ overflowY: 'visible' });
@@ -123,7 +133,7 @@ export async function loadExtension({ withStore = false } = {}) {
       setState: s => { state = { ...state, ...s }; },
       setHeartbeat: v => { heartbeat = v; },
       setConfig: patch => Object.assign(CFG, patch),
-      pingWorker,
+      pingWorker, continueBatch, isTransientLink, reloadCount, failRun, batchFatal, pendingFrom,
       // Whether a collection loop actually exists. A page reload leaves the
       // persisted state saying RUNNING with nothing behind it.
       hasLoop: () => !!loopPromise,
