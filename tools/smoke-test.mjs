@@ -989,5 +989,27 @@ section('the register covers both groups, whoever found the row');
     collected.has('общепит') && collected.has('продуктовая розница'), JSON.stringify([...collected]));
 }
 
+// --- the sub-rubrics the eleven-category plan only reached by accident -------
+section('categories a query list can now target directly');
+{
+  const cat = await loadExtension({ withStore: false });
+  const cases = [
+    ['Пиццерия', 'Пиццерия, кафе', true], ['Суши', 'Суши-бар, ресторан', true],
+    ['Чайхана', 'Чайхана, кафе', true], ['Кальян-бар', 'Кальян-бар, бар', true],
+    ['Караоке / спортбар', 'Караоке-клуб, бар', true], ['Банкетный зал', 'Банкетный зал, ресторан', true],
+    ['Доставка еды', 'Доставка еды и обедов', true], ['Кейтеринг', 'Кейтеринг, доставка еды и обедов', true],
+    ['Молочный магазин', 'Молочный магазин', true], ['Сырный магазин', 'Магазин сыров', true],
+    ['Чай / кофе', 'Магазин чая, магазин кофе', true], ['Орехи / сухофрукты', 'Орехи, сухофрукты', true],
+    ['Кулинария', 'Магазин кулинарии', true], ['Продукты глубокой заморозки', 'Продукты глубокой заморозки', true],
+    // and they still say no when the rubric is something else
+    ['Чайхана', 'Магазин продуктов', false], ['Банкетный зал', 'Супермаркет', false],
+    ['Молочный магазин', 'Магазин автозапчастей', false],
+  ];
+  const wrong = cases.filter(([c, rubric, want]) => cat.api.categoryMatch(c, rubric) !== want);
+  check('every new category decides its own rubrics', wrong.length === 0, JSON.stringify(wrong));
+  check('an unknown category is still UNKNOWN, not a guess',
+    cat.api.categoryMatch('Ночной клуб', 'Ресторан') === null);
+}
+
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);
 process.exit(failures ? 1 : 0);

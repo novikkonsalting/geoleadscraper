@@ -677,6 +677,21 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
       case 'мясной магазин': { const food=includesAny(actual,['мяс','колбас']); return food && (!includesAny(actual,FOOD_SERVICE)||includesAny(actual,RETAIL_HINT)); }
       case 'рыбный магазин': { const food=includesAny(actual,['рыб','морепродукт']); return food && (!includesAny(actual,FOOD_SERVICE)||includesAny(actual,RETAIL_HINT)); }
       case 'алкогольный магазин': return includesAny(actual,['магазин алкоголь','алкогольные напитки','винный магазин','винотека']);
+      // The eleven-category plan reached these only by accident, through a
+      // кафе or супермаркет query. Naming them makes the verdict MATCH instead
+      // of "the group let it in", and lets a query list target them directly.
+      case 'молочный магазин': return includesAny(actual,['молочн']);
+      case 'сырный магазин': return includesAny(actual,['магазин сыр','сырная лавка','сыр ручной работы']);
+      case 'чай / кофе': return includesAny(actual,['магазин чая','магазин кофе','чай и кофе','кофе в зернах']);
+      case 'орехи / сухофрукты': return includesAny(actual,['орех','сухофрукт','снеки']);
+      case 'кулинария': return includesAny(actual,['кулинар']);
+      case 'продукты глубокой заморозки': return includesAny(actual,['глубокой заморозки','замороженн']);
+      case 'банкетный зал': return includesAny(actual,['банкетный зал','банкетн']);
+      case 'доставка еды': return includesAny(actual,['доставка еды','доставка обед','доставка готовой еды']);
+      case 'кейтеринг': return includesAny(actual,['кейтеринг']);
+      case 'чайхана': return includesAny(actual,['чайхан']);
+      case 'кальян-бар': return includesAny(actual,['кальян']);
+      case 'караоке / спортбар': return includesAny(actual,['караоке','спортбар','спорт-бар']);
       case 'специализированная пищевая розница': return includesAny(actual,['магазин чая','магазин кофе','чай и кофе','магазин сыр','сырная лавка','кондитерские изделия','фермерские продукты','продукты пчеловодства','диетические продукты','орех','сухофрукт','специи','бакалея']);
       case 'пищевое производство': return includesAny(actual,['производство продуктов питания','пищевое производство','пищевая промышленность','хлебозавод','кондитерская фабрика','мясокомбинат','молочный завод','пивовар','производство напитков','производство хлеб','производство кондитер']);
       case 'производственное предприятие': { const prod=includesAny(actual,['производствен','промышленн','предприятие','завод','фабрика']); if(!prod)return false; return !includesAny(actual,['пищев','продукт','хлеб','кондитер','мяс','рыб','молоч','напитк','пивовар']); }
