@@ -992,6 +992,22 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     return [...candidates].sort((a,b) => score(b)-score(a))[0] || null;
   };
 
+  // Yandex answering "Ничего не найдено" is a valid answer to a query, not a
+  // broken page: a district simply has no мясокомбинат. Without this the batch
+  // died on the first such query and every CONTINUE died on it again, which on
+  // a production query list means dying over and over.
+  const NOTHING_FOUND=['ничего не найдено','ничего не нашлось','nothing found','no results found'];
+  const emptyResultList = () => {
+    if(orgUrls(document).length)return false;
+    let text='';
+    try{ text=normalize(String(document.body?.innerText||'').slice(0,5000)); }catch{}
+    if(NOTHING_FOUND.some(t=>text.includes(t)))return true;
+    // Inside a batch we navigated to a search URL ourselves and have already
+    // waited out the container timeout. No organisation link anywhere on the
+    // page by then means the search came back empty, whatever it says.
+    return batch.status===BATCH.RUNNING;
+  };
+
   const waitMutation = container => new Promise(resolve => {
     let done = false;
     const finish = () => { if (done) return; done = true; obs.disconnect(); clearTimeout(timer); resolve(); };
@@ -1146,6 +1162,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     // little and closed with five organisations was reported as a clean
     // success: seventy of a hundred and thirty queries did exactly that and
     // export_queries_low_yield still read 0.
+    const empty = String(reason||'').includes('empty result list');
     const lowYield = state.uniqueCount < CFG.LOW_YIELD_UNIQUE;
     const neverScrolled = !state.scrolledEver;
     // Only a run that was cut off is suspicious. Comparing against listSeen was
@@ -1156,6 +1173,8 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     const stalled = String(reason||'').includes('watchdog');
     const warning = stalled
       ? `Сбор по этому запросу завис и был закрыт сторожевым таймером после ${state.uniqueCount} карточек. Выдача могла закончиться не полностью - повторите запрос, если нужна гарантия полноты.`
+      : empty
+      ? 'Яндекс ничего не нашёл по этому запросу. Это не сбой: такой категории в этом районе на картах нет.'
       : lowYield && neverScrolled
       ? `Сбор завершился после ${state.uniqueCount} карточек, но список выдачи ни разу не прокрутился. Результат почти наверняка неполный: проверьте, что открыт список результатов Яндекс Карт, и повторите запрос.`
       : lowYield
@@ -1176,7 +1195,10 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
       if (challenged()) return requireAction();
       await sleep(500); container = findContainer();
     }
-    if (!container) throw new Error('Не найден scroll-container выдачи Яндекс Карт. Откройте список результатов поиска и повторите.');
+    if (!container) {
+      if (emptyResultList()) { log('empty result list', {query: state.currentSearchQuery}); return complete('empty result list'); }
+      throw new Error('Не найден scroll-container выдачи Яндекс Карт. Откройте список результатов поиска и повторите.');
+    }
     log('container found', {scrollHeight:container.scrollHeight,clientHeight:container.clientHeight});
     let stagnant = 0, repeatedKnown = 0, pushes = 0;
     await collectVisible(container, token);

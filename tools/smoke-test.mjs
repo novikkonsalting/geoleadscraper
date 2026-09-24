@@ -1052,5 +1052,48 @@ section('пищевое производство')
     (await prod.api.evaluateItem(plant, { district: 'Черёмушки', group: 'Общепит', category: 'Кафе', query: 'кафе Черёмушки Москва' })).accept);
 }
 
+// --- "Ничего не найдено" is an answer ----------------------------------------
+// A production query list asks about мясокомбинаты in twelve residential
+// districts, so most of it comes back empty. That killed the batch on the first
+// one, and every CONTINUE died on the same query again.
+section('an empty result list finishes the query, it does not fail it');
+{
+  const none = await loadExtension({ withStore: true });
+  none.api.setConfig({ FIND_CONTAINER_TIMEOUT_MS: 50, BATCH_PAGE_SETTLE_MS: 5 });
+  const q = { id: 'p1', district: 'Зюзино', group: 'Пищевое производство', category: 'Мясопереработка',
+    query: 'мясокомбинат мясное производство район Зюзино Москва' };
+  none.api.setBatch({ status: 'RUNNING', fileName: 'PROIZVODSTVO.csv', currentIndex: 0, completedQueries: 0,
+    queue: [q, { id: 'p2', ...q, id: 'p2', query: 'пивоварня пивоваренный завод район Зюзино Москва', status: 'PENDING' }] });
+  check('a batch page with no organisation links at all reads as an empty result',
+    none.api.emptyResultList());
+
+  globalThis.location.href = `https://yandex.ru/maps/213/moscow/search/${encodeURIComponent(q.query)}/`;
+  globalThis.location.pathname = `/maps/213/moscow/search/${encodeURIComponent(q.query)}/`;
+  const navBefore = globalThis.location.navigations.length;
+  await none.api.runBatchCurrent();
+  // The query closes and the batch moves straight on, so read the verdict off
+  // the queue entry rather than off the live state it has already left behind.
+  const deadline = Date.now() + 4000;
+  while (none.api.getBatch().currentIndex === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 25));
+  const done = none.api.getBatch().queue[0];
+  check('the query completes instead of throwing',
+    done.status === 'COMPLETED_LOW' && !done.error, `${done.status} ${done.error || ''}`);
+  check('and says plainly that Yandex found nothing',
+    /ничего не нашел/i.test((done.warning || '').replace(/ё/g, 'е')), done.warning);
+  check('the batch is not in error and has moved on to the next query',
+    none.api.getBatch().status === 'RUNNING' && none.api.getBatch().currentIndex === 1,
+    `${none.api.getBatch().status} @${none.api.getBatch().currentIndex}`);
+  check('the empty query is recorded as low yield, not as a silent success',
+    (await none.api.yieldSummary()).lowCount === 1);
+  check('and it navigated on rather than sitting on the same page',
+    globalThis.location.navigations.length > navBefore);
+
+  // Outside a batch an empty page is still an error: the user may simply not
+  // have opened the result list, and silently reporting success would lie.
+  none.api.setBatch({ status: 'IDLE', queue: [] });
+  check('with no batch running, an empty page is not called an empty result',
+    !none.api.emptyResultList());
+}
+
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);
 process.exit(failures ? 1 : 0);
