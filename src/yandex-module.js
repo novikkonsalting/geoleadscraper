@@ -797,11 +797,21 @@
   // Tells the service worker this page is still alive. A tab that stops saying
   // so while it was collecting has crashed, and the worker reloads it - see
   // src/watch-worker.js. Nothing is sent unless a batch is actually running.
+  // Saying "still collecting" is only half the job: the page has to say when it
+  // stops, too. It did not, so after a batch finished the worker was left with
+  // "this tab was collecting and has gone quiet", and reloaded it every three
+  // minutes - right through the local filtering that runs afterwards, which is
+  // exactly when the page must not be touched.
+  let announcedRunning=false;
   const pingWorker = () => {
-    if(![BATCH.RUNNING,BATCH.USER_ACTION_REQUIRED].includes(batch.status))return;
+    const running=[BATCH.RUNNING,BATCH.USER_ACTION_REQUIRED].includes(batch.status);
+    // Nothing to report and nothing to take back.
+    if(!running&&!announcedRunning)return;
+    announcedRunning=running;
     try{
       const sent=chrome.runtime.sendMessage({type:'GLS_ALIVE',payload:{
         batchRunning:batch.status===BATCH.RUNNING,
+        filtering:batch.filterStatus==='RUNNING',
         autoStatus:state.status,
         query:state.currentSearchQuery||'',
       }});

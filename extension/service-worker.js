@@ -476,6 +476,9 @@ var R={exports:{}},X=R.exports,j;function V(){return j||(j=1,(function(s,r){(fun
     state[tabId] = {
       at: now,
       batchRunning: !!payload.batchRunning,
+      // Local filtering is not collection, and reloading the page through it
+      // throws away a pass over the whole registry.
+      filtering: !!payload.filtering,
       autoStatus: payload.autoStatus || '',
       query: payload.query || '',
       reloads: recovered ? 0 : (prev.reloads || 0),
@@ -490,6 +493,7 @@ var R={exports:{}},X=R.exports,j;function V(){return j||(j=1,(function(s,r){(fun
     for (const [id, entry] of Object.entries(state)) {
       if (!entry || (!entry.batchRunning && now - (entry.at || 0) > FORGET_MS)) { delete state[id]; changed = true; continue; }
       if (!entry.batchRunning) continue;
+      if (entry.filtering) continue;
       if (entry.autoStatus === 'USER_ACTION_REQUIRED') continue;
       if (now - entry.at < SILENT_MS) continue;
       if (now - (entry.lastReload || 0) < COOLDOWN_MS) continue;

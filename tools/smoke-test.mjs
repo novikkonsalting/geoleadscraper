@@ -859,7 +859,41 @@ section('a crashed page must not need a human')
   quiet.api.setBatch({ status: 'COMPLETED', queue: [] });
   quiet.api.pingWorker();
   await new Promise(r => setTimeout(r, 0));
-  check('a finished batch sends no heartbeat at all', Object.keys(await quiet.watch.read()).length === 0);
+  check('a batch that never ran sends no heartbeat at all', Object.keys(await quiet.watch.read()).length === 0);
+
+  // Saying "collecting" without ever saying "stopped" is what reloaded the page
+  // through local filtering, three times, each time losing a pass over the
+  // whole registry.
+  const done = await loadExtension({ withStore: true });
+  done.openTab(11);
+  done.setSenderTab(11);
+  done.api.setBatch({ status: 'RUNNING', queue: [{ id: 'a', query: 'q' }] });
+  done.api.pingWorker();
+  await new Promise(r => setTimeout(r, 0));
+  check('a collecting tab reports itself', (await done.watch.read())[11]?.batchRunning === true);
+  done.api.setBatch({ status: 'COMPLETED', filterStatus: 'RUNNING' });
+  done.api.pingWorker();
+  await new Promise(r => setTimeout(r, 0));
+  check('and takes it back the moment collection ends',
+    (await done.watch.read())[11]?.batchRunning === false, JSON.stringify((await done.watch.read())[11]));
+  {
+    const state = await done.watch.read();
+    state[11] = { ...state[11], at: Date.now() - done.watch.SILENT_MS - 1000 };
+    await done.watch.write(state);
+  }
+  await done.fireAlarm('gls-tab-watch');
+  check('so a page busy filtering is never reloaded',
+    !done.reloadedTabs.includes(11), JSON.stringify(done.reloadedTabs));
+  // Even if the retraction never arrived, a tab that said it was filtering is
+  // left alone.
+  {
+    const state = await done.watch.read();
+    state[11] = { ...state[11], batchRunning: true, filtering: true, at: Date.now() - done.watch.SILENT_MS - 1000 };
+    await done.watch.write(state);
+  }
+  await done.fireAlarm('gls-tab-watch');
+  check('and the filtering flag alone is enough to protect it',
+    !done.reloadedTabs.includes(11), JSON.stringify(done.reloadedTabs));
 }
 
 // --- a lost line to the extension ---------------------------------------------

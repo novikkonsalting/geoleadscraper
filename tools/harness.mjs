@@ -28,6 +28,9 @@ export async function loadExtension({ withStore = false } = {}) {
   const alarmListeners = [];
   const openTabs = new Set();
   const reloaded = [];
+  // Which tab a content-script message appears to come from. Chrome fills this
+  // in; without it the crash watcher cannot tell tabs apart.
+  let senderTabId = null;
 
   // Import the IndexedDB polyfill before the DOM shim exists: it installs onto
   // `window` when it finds one, and our `window` is a stub the store cannot see.
@@ -86,7 +89,8 @@ export async function loadExtension({ withStore = false } = {}) {
         let answered = false;
         const respond = response => { if (!answered) { answered = true; callback?.(response); } };
         let kept = false;
-        for (const listener of listeners) if (listener(message, {}, respond) === true) kept = true;
+        const sender = senderTabId === null ? {} : { tab: { id: senderTabId } };
+        for (const listener of listeners) if (listener(message, sender, respond) === true) kept = true;
         if (!kept && !answered) respond(undefined);
       },
     },
@@ -163,6 +167,7 @@ export async function loadExtension({ withStore = false } = {}) {
     watch: globalThis.GLSWatch,
     // The tab the crash watcher can see, and what it did to it.
     openTab: id => openTabs.add(id),
+    setSenderTab: id => { senderTabId = id; },
     closeTab: id => openTabs.delete(id),
     reloadedTabs: reloaded,
     fireAlarm: name => Promise.all(alarmListeners.map(fn => fn({ name }))),
