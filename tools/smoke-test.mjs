@@ -1119,5 +1119,44 @@ section('nothing to scroll is not a reason to keep scrolling');
     && sc.api.CFG.MIN_NO_PROGRESS_MS_STATIC < sc.api.CFG.MIN_NO_PROGRESS_MS);
 }
 
+// --- the next query's URL must not be built on a card page -------------------
+// Yandex opens the organisation card when a query returns two or three
+// results, and the address becomes /maps/org/<slug>/... Reading that as
+// "region=org, city=<slug>" produced
+// /maps/org/td_moskovskiy_rybokombinat/search/производство напитков…, a 404 -
+// and every following query was built from that 404, so the batch could not
+// leave the page.
+section('search URLs are built on a city, never on an organisation card');
+{
+  const url = await loadExtension({ withStore: false });
+  const roots = [
+    ['https://yandex.com/maps/213/moscow/search/кафе/', '213', 'moscow'],
+    ['https://yandex.com/maps/213/moscow/', '213', 'moscow'],
+    ['https://yandex.com/maps/org/td_moskovskiy_rybokombinat/search/производство%20напитков/', '213', 'moscow'],
+    ['https://yandex.com/maps/org/td_moskovskiy_rybokombinat/1234567/', '213', 'moscow'],
+    ['https://yandex.ru/maps/2/saint-petersburg/search/бары/', '2', 'saint-petersburg'],
+    ['https://yandex.ru/maps/', '213', 'moscow'],
+  ];
+  const wrong = roots.filter(([href, region, city]) => {
+    const r = url.api.mapRoot(href);
+    return r.region !== region || r.city !== city;
+  });
+  check('the city is read from the address, and a card page falls back to Moscow',
+    wrong.length === 0, JSON.stringify(wrong.map(([h]) => [h, url.api.mapRoot(h)])));
+
+  globalThis.location.href = 'https://yandex.com/maps/org/td_moskovskiy_rybokombinat/search/%D1%80%D1%8B%D0%B1%D0%B0/';
+  globalThis.location.pathname = '/maps/org/td_moskovskiy_rybokombinat/search/%D1%80%D1%8B%D0%B1%D0%B0/';
+  const next = url.api.buildSearchUrl('производство напитков Гагаринский район Москва', 'Гагаринский');
+  check('so the next query goes to a real search page, not into the card',
+    next.includes('/maps/213/moscow/search/') && !next.includes('/org/'), next);
+  check('and it still aims the map at the district',
+    /[?&]ll=/.test(next) && /[?&]z=/.test(next), next);
+  check('a card page is not mistaken for a search page',
+    !url.api.onSearchPage());
+  globalThis.location.href = 'https://yandex.com/maps/213/moscow/search/%D0%BA%D0%B0%D1%84%D0%B5/';
+  globalThis.location.pathname = '/maps/213/moscow/search/%D0%BA%D0%B0%D1%84%D0%B5/';
+  check('a real search page is', url.api.onSearchPage());
+}
+
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);
 process.exit(failures ? 1 : 0);

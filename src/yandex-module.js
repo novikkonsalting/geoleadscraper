@@ -695,6 +695,14 @@
   // died on the first such query and every CONTINUE died on it again, which on
   // a production query list means dying over and over.
   const NOTHING_FOUND=['ничего не найдено','ничего не нашлось','nothing found','no results found'];
+  // Are we on the search page we asked for? A 404, or a card page Yandex
+  // redirected to, is not an empty result - it is the wrong page.
+  const onSearchPage = () => {
+    try{
+      const p=new URL(location.href).pathname;
+      return p.includes('/search/') && !/^\/maps\/org\//i.test(p);
+    }catch{ return false; }
+  };
   const emptyResultList = () => {
     if(orgUrls(document).length)return false;
     let text='';
@@ -702,8 +710,9 @@
     if(NOTHING_FOUND.some(t=>text.includes(t)))return true;
     // Inside a batch we navigated to a search URL ourselves and have already
     // waited out the container timeout. No organisation link anywhere on the
-    // page by then means the search came back empty, whatever it says.
-    return batch.status===BATCH.RUNNING;
+    // page by then means the search came back empty, whatever it says - but
+    // only if this is actually the search page and not an error page.
+    return batch.status===BATCH.RUNNING && onSearchPage();
   };
 
   const waitMutation = container => new Promise(resolve => {
@@ -912,6 +921,16 @@
     }
     if (!container) {
       if (emptyResultList()) { log('empty result list', {query: state.currentSearchQuery}); return complete('empty result list'); }
+      // Not the page we asked for - a 404, or a card Yandex redirected to. The
+      // repair is to go to the right URL, not to fail the query and with it the
+      // whole batch.
+      const current = batch.status===BATCH.RUNNING ? batch.queue[batch.currentIndex] : null;
+      if (current && !onSearchPage() && (batch.navAttempts||0) < CFG.MAX_NAV_ATTEMPTS) {
+        await patchBatch({navAttempts:(batch.navAttempts||0)+1});
+        blog('wrong page for this query, navigating to the search URL again',{query:current.query,url:location.href});
+        location.assign(buildSearchUrl(current.query,current.district));
+        return;
+      }
       throw new Error('Не найден scroll-container выдачи Яндекс Карт. Откройте список результатов поиска и повторите.');
     }
     log('container found', {scrollHeight:container.scrollHeight,clientHeight:container.clientHeight});
@@ -1282,9 +1301,29 @@
     if(!out.length) throw new Error('В CSV нет непустых поисковых запросов.'); return out;
   };
 
+  // Sections of /maps/ that are not a city. Yandex opens the organisation card
+  // when a query returns two or three results, and the address then reads
+  // /maps/org/<slug>/... - taking that as "region=org, city=<slug>" built the
+  // next query's URL as /maps/org/td_moskovskiy_rybokombinat/search/..., which
+  // is a 404. Every following query was then built from that 404 and the batch
+  // could not leave the page.
+  const RESERVED_MAP_PATH=new Set(['search','org','geo','chain','stops','transport','profile','discovery','reviews','photos','print','routes','panorama','narrative']);
+  // Splits the current address into the region and city the search URL is built
+  // on, falling back to Moscow whenever the address is not a city page.
+  const mapRoot = href => {
+    try{
+      const parts=new URL(href).pathname.split('/').filter(Boolean);
+      const rest=parts[0]==='maps'?parts.slice(1):parts;
+      const numeric=/^\d+$/.test(rest[0]||'');
+      const region=numeric?rest[0]:'213';
+      const city=rest[numeric?1:0]||'';
+      const usable=city&&!RESERVED_MAP_PATH.has(city.toLowerCase())&&!/^\d+$/.test(city);
+      return {region,city:usable?city:'moscow'};
+    }catch{ return {region:'213',city:'moscow'}; }
+  };
+
   const buildSearchUrl = (query,district=null) => {
-    const current=new URL(location.href), m=current.pathname.match(/^\/maps\/([^/]+)\/([^/]+)/i);
-    const region=m?.[1]||'213', city=(m?.[2]&&m[2]!=='search')?m[2]:'moscow';
+    const current=new URL(location.href), {region,city}=mapRoot(location.href);
     const next=new URL(`${current.origin}/maps/${region}/${city}/search/${encodeURIComponent(query)}/`);
     const view=districtView(district);
     if(view){
