@@ -1095,5 +1095,29 @@ section('an empty result list finishes the query, it does not fail it');
     !none.api.emptyResultList());
 }
 
+// --- a panel that cannot scroll must not be yanked about ---------------------
+// When a query returns three organisations Yandex opens the card instead of a
+// list, and the collector spent minutes throwing that card up and down.
+section('nothing to scroll is not a reason to keep scrolling');
+{
+  const sc = await loadExtension({ withStore: false });
+  const tall = { scrollTop: 0, scrollHeight: 4000, clientHeight: 800 };
+  const flat = { scrollTop: 0, scrollHeight: 780, clientHeight: 800 };
+  check('a list with room below is scrolled',
+    sc.api.scrollPlan(tall, 0).action === 'scroll', JSON.stringify(sc.api.scrollPlan(tall, 0)));
+  check('a panel with nothing below still gets its few nudges',
+    sc.api.scrollPlan(flat, 0).action === 'nudge' && sc.api.scrollPlan(flat, 2).action === 'nudge');
+  check('and after those it is left alone instead of being yanked every cycle',
+    sc.api.scrollPlan(flat, sc.api.CFG.MAX_NUDGES).action === 'hold');
+  check('a panel already at its bottom is nudged, not scrolled past',
+    sc.api.scrollPlan({ scrollTop: 3200, scrollHeight: 4000, clientHeight: 800 }, 0).action === 'nudge');
+  check('and the unscrollable case is recognised by maxTop, not by guesswork',
+    sc.api.scrollPlan(flat, 0).maxTop === 0 && sc.api.scrollPlan(tall, 0).maxTop === 3200);
+  // The shorter patience only applies to a list that cannot move at all.
+  check('a static list closes sooner than a scrolling one',
+    sc.api.CFG.NO_PROGRESS_LIMIT_STATIC < sc.api.CFG.NO_PROGRESS_LIMIT
+    && sc.api.CFG.MIN_NO_PROGRESS_MS_STATIC < sc.api.CFG.MIN_NO_PROGRESS_MS);
+}
+
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);
 process.exit(failures ? 1 : 0);

@@ -376,6 +376,14 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     // How many times a query that harvested fewer than LOW_YIELD_UNIQUE
     // organisations is pushed to load more before its result is believed.
     SHORT_LIST_PUSHES: 2,
+    // A panel that will not move gets a few nudges, not one per cycle forever.
+    MAX_NUDGES: 3,
+    // Consecutive cycles with nothing to scroll before the list is treated as
+    // whole. Yandex opens the organisation card when a query returns two or
+    // three results, and that card has no list to scroll.
+    UNSCROLLABLE_LIMIT: 4,
+    NO_PROGRESS_LIMIT_STATIC: 4,
+    MIN_NO_PROGRESS_MS_STATIC: 8000,
     // Quiet cycles required after a push before the short result is believed.
     POST_PUSH_CYCLES: 3,
     // Rough size of the Yandex Maps map pane, used to pick a zoom that fits a
@@ -1034,6 +1042,23 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
     if(!hit)return false;
     try{hit.click();return true;}catch{return false;}
   };
+  // What to do with the container this cycle. A panel that cannot scroll at all
+  // - which is what Yandex leaves when a query returns three results and it
+  // opens the organisation card instead of a list - was being yanked up and
+  // thrown back down on every cycle for minutes. It achieves nothing, it is
+  // alarming to watch, and it is why a three-result query took four minutes.
+  const scrollPlan = (metrics, nudges) => {
+    const top=Math.max(0,metrics.scrollTop||0);
+    const maxTop=Math.max(0,(metrics.scrollHeight||0)-(metrics.clientHeight||0));
+    const step=Math.max(CFG.MIN_STEP,(metrics.clientHeight||0)*CFG.STEP_RATIO);
+    const target=Math.min(maxTop,top+step);
+    if(target>top+2)return {action:'scroll',target,maxTop};
+    // A couple of nudges are still worth it: a list that has loaded everything
+    // it has for now can start loading more when thrown to its own bottom.
+    if(nudges<CFG.MAX_NUDGES)return {action:'nudge',target:maxTop,maxTop};
+    return {action:'hold',target:top,maxTop};
+  };
+
   const pressForMore = async container => {
     const fresh=findContainer()||container;
     for(const el of [fresh,document.scrollingElement]){
@@ -1200,7 +1225,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
       throw new Error('Не найден scroll-container выдачи Яндекс Карт. Откройте список результатов поиска и повторите.');
     }
     log('container found', {scrollHeight:container.scrollHeight,clientHeight:container.clientHeight});
-    let stagnant = 0, repeatedKnown = 0, pushes = 0;
+    let stagnant = 0, repeatedKnown = 0, pushes = 0, nudges = 0, unscrollable = 0;
     await collectVisible(container, token);
     while (token === runToken) {
       beat();
@@ -1225,12 +1250,12 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
         throw new Error('Сработал safety timeout до получения устойчивого полезного результата.');
       }
       const beforeUnique = state.uniqueCount, beforeTop = container.scrollTop, beforeHeight = container.scrollHeight;
-      const maxTop = Math.max(0, beforeHeight - container.clientHeight);
-      const step = Math.max(CFG.MIN_STEP, container.clientHeight * CFG.STEP_RATIO);
-      const target = Math.min(maxTop, beforeTop + step);
-      if (target > beforeTop + 2) {
-        container.scrollTop = target; container.dispatchEvent(new Event('scroll',{bubbles:true}));
-      } else {
+      const plan = scrollPlan({scrollTop:beforeTop,scrollHeight:beforeHeight,clientHeight:container.clientHeight}, nudges);
+      unscrollable = plan.maxTop <= 8 ? unscrollable + 1 : 0;
+      if (plan.action === 'scroll') {
+        container.scrollTop = plan.target; container.dispatchEvent(new Event('scroll',{bubbles:true}));
+      } else if (plan.action === 'nudge') {
+        nudges++;
         const nudge = Math.min(160, Math.max(80, container.clientHeight*.12));
         container.scrollTop = Math.max(0,beforeTop-nudge); container.dispatchEvent(new Event('scroll',{bubbles:true}));
         await sleep(160);
@@ -1257,7 +1282,13 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
       });
       log(`scroll iteration ${state.iteration}`, {unique:state.uniqueCount,noProgress:`${state.noProgressCycles}/${CFG.NO_PROGRESS_LIMIT}`});
       const noNewFor = Date.now() - (state.lastProgressTime || started);
-      if (state.noProgressCycles >= CFG.NO_PROGRESS_LIMIT && noNewFor >= CFG.MIN_NO_PROGRESS_MS && (stagnant >= CFG.STAGNANT_REQUIRED || repeatedKnown >= CFG.REPEATED_KNOWN_CYCLES_REQUIRED)) {
+      // A container with nothing to scroll has already told us the list is
+      // whole. Waiting the full patience out on it costs minutes per query on
+      // a list where most queries return a handful of organisations.
+      const staticList = unscrollable >= CFG.UNSCROLLABLE_LIMIT;
+      const progressLimit = staticList ? CFG.NO_PROGRESS_LIMIT_STATIC : CFG.NO_PROGRESS_LIMIT;
+      const quietFor = staticList ? CFG.MIN_NO_PROGRESS_MS_STATIC : CFG.MIN_NO_PROGRESS_MS;
+      if (state.noProgressCycles >= progressLimit && noNewFor >= quietFor && (stagnant >= CFG.STAGNANT_REQUIRED || repeatedKnown >= CFG.REPEATED_KNOWN_CYCLES_REQUIRED)) {
         // A small harvest does not get to end the query on the first quiet
         // stretch. Seventy of the hundred and thirty queries in the twelve
         // district run closed here with exactly five organisations.
@@ -1269,7 +1300,7 @@ ${l}`},Qp=async({url:t,id:a})=>{if(!document)return null;const n=document.create
           // Only a short re-check after a push, not the full patience again:
           // waiting ten more quiet cycles per push turned every short query
           // into ten minutes, and the pushes rarely find anything.
-          stagnant = 0; repeatedKnown = 0;
+          stagnant = 0; repeatedKnown = 0; nudges = 0; unscrollable = 0;
           await patchAuto({
             noProgressCycles:Math.max(0,CFG.NO_PROGRESS_LIMIT-CFG.POST_PUSH_CYCLES),
             shortListPushes:pushes,
