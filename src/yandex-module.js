@@ -317,11 +317,20 @@
   const GROUP_PATTERNS={
     'продуктовая розница':[/магазин[^,;|]{0,32}продукт/,/продуктов[^,;|]{0,12}магазин/],
   };
+  // "Кофе с собой" is a rubric of its own at Yandex. A point that carries only
+  // that one is общепит and was being thrown out of a register of общепит; a
+  // Пятёрочка with a coffee machine carries it too, and that is a shop, not a
+  // coffee bar - so the shop rubrics veto it.
+  const GROUP_EXTRA={
+    'общепит':[actual => actual.includes('кофе с собой') && !includesAny(actual,RETAIL_HINT)],
+  };
   const categoryGroups = categoriesRaw => {
     const actual=normalize(categoriesRaw);
     if(!actual)return [];
     return Object.entries(GROUP_TOKENS)
-      .filter(([group,tokens])=>includesAny(actual,tokens)||(GROUP_PATTERNS[group]||[]).some(re=>re.test(actual)))
+      .filter(([group,tokens])=>includesAny(actual,tokens)
+        ||(GROUP_PATTERNS[group]||[]).some(re=>re.test(actual))
+        ||(GROUP_EXTRA[group]||[]).some(fn=>fn(actual)))
       .map(([group])=>group);
   };
   const DISTRICTS={

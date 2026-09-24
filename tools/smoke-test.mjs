@@ -1009,6 +1009,14 @@ section('categories a query list can now target directly');
   check('every new category decides its own rubrics', wrong.length === 0, JSON.stringify(wrong));
   check('an unknown category is still UNKNOWN, not a guess',
     cat.api.categoryMatch('Ночной клуб', 'Ресторан') === null);
+  // Yandex files a coffee-to-go point under that rubric alone, and it was
+  // falling out of a register of общепит for want of the word "кофейня".
+  check('coffee to go is общепит even when it is the only rubric',
+    cat.api.categoryGroups('Кофе с собой').includes('общепит'),
+    JSON.stringify(cat.api.categoryGroups('Кофе с собой')));
+  check('but a supermarket with a coffee machine is still a shop',
+    !cat.api.categoryGroups('Супермаркет, кофе с собой, магазин продуктов').includes('общепит'),
+    JSON.stringify(cat.api.categoryGroups('Супермаркет, кофе с собой, магазин продуктов')));
 }
 
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);
