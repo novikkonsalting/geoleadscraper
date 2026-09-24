@@ -1158,5 +1158,38 @@ section('search URLs are built on a city, never on an organisation card');
   check('a real search page is', url.api.onSearchPage());
 }
 
+// --- one result: Yandex opens the card, and that is the answer ---------------
+section('an organisation card is an answer, not a list to scroll');
+{
+  const card = await loadExtension({ withStore: true });
+  card.setCardFetcher(async () => null);
+  card.api.setConfig({ FIND_CONTAINER_TIMEOUT_MS: 50, BATCH_PAGE_SETTLE_MS: 5 });
+  const q = { id: 'c1', district: 'Академический', group: 'Пищевое производство', category: 'Рыбопереработка',
+    query: 'рыбоперерабатывающий завод рыбное производство Академический район Москва' };
+  card.api.setBatch({ status: 'RUNNING', fileName: 'PROIZVODSTVO.csv', currentIndex: 0, completedQueries: 0,
+    queue: [q, { ...q, id: 'c2', query: 'производство напитков Академический район Москва', status: 'PENDING' }] });
+
+  globalThis.location.href = 'https://yandex.com/maps/org/morskoy_meridian/132642634737/?mode=search&text=' + encodeURIComponent(q.query);
+  globalThis.location.pathname = '/maps/org/morskoy_meridian/132642634737/';
+  check('a card address is recognised', card.api.onOrgCard());
+  check('and a search address is not', (() => {
+    const href = globalThis.location.href, path = globalThis.location.pathname;
+    globalThis.location.href = 'https://yandex.com/maps/213/moscow/search/%D0%BA%D0%B0%D1%84%D0%B5/';
+    globalThis.location.pathname = '/maps/213/moscow/search/%D0%BA%D0%B0%D1%84%D0%B5/';
+    const verdict = card.api.onOrgCard();
+    globalThis.location.href = href; globalThis.location.pathname = path;
+    return !verdict;
+  })());
+
+  await card.api.runBatchCurrent();
+  const deadline = Date.now() + 4000;
+  while (card.api.getBatch().currentIndex === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 25));
+  const done = card.api.getBatch().queue[0];
+  check('the query closes on the card instead of scrolling through its reviews',
+    done.status === 'COMPLETED_LOW' && !done.error, `${done.status} ${done.error || ''}`);
+  check('and the warning explains that one organisation matched',
+    /карточку организации/.test(done.warning || ''), done.warning);
+}
+
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);
 process.exit(failures ? 1 : 0);

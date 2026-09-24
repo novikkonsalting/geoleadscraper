@@ -703,6 +703,14 @@
       return p.includes('/search/') && !/^\/maps\/org\//i.test(p);
     }catch{ return false; }
   };
+  // Yandex answers a search that matches exactly one organisation by opening
+  // that organisation's card: the address becomes /maps/org/<slug>/<id>/ with
+  // the query kept in ?text=. The card is the answer, and it is already read -
+  // scrolling through its reviews and its "похожие места" collects
+  // organisations this query never returned and costs minutes per query.
+  const onOrgCard = () => {
+    try{ return /^\/maps\/org\//i.test(new URL(location.href).pathname); }catch{ return false; }
+  };
   const emptyResultList = () => {
     if(orgUrls(document).length)return false;
     let text='';
@@ -887,6 +895,7 @@
     // success: seventy of a hundred and thirty queries did exactly that and
     // export_queries_low_yield still read 0.
     const empty = String(reason||'').includes('empty result list');
+    const card = String(reason||'').includes('organisation card');
     const lowYield = state.uniqueCount < CFG.LOW_YIELD_UNIQUE;
     const neverScrolled = !state.scrolledEver;
     // Only a run that was cut off is suspicious. Comparing against listSeen was
@@ -897,6 +906,8 @@
     const stalled = String(reason||'').includes('watchdog');
     const warning = stalled
       ? `Сбор по этому запросу завис и был закрыт сторожевым таймером после ${state.uniqueCount} карточек. Выдача могла закончиться не полностью - повторите запрос, если нужна гарантия полноты.`
+      : card
+      ? `По этому запросу Яндекс открыл карточку организации вместо списка — значит, нашлась одна. Собрано ${state.uniqueCount}.`
       : empty
       ? 'Яндекс ничего не нашёл по этому запросу. Это не сбой: такой категории в этом районе на картах нет.'
       : lowYield && neverScrolled
@@ -920,6 +931,14 @@
       await sleep(500); container = findContainer();
     }
     if (!container) {
+      // A card Yandex opened in place of a list is the answer to the query, not
+      // a wrong page: going back to the search URL would only be redirected
+      // here again, and after MAX_NAV_ATTEMPTS the query would fail.
+      if (batch.status === BATCH.RUNNING && onOrgCard()) {
+        await collectVisible(document.documentElement || document.body, token);
+        log('yandex answered with an organisation card', {unique:state.uniqueCount, query:state.currentSearchQuery});
+        return complete('organisation card');
+      }
       if (emptyResultList()) { log('empty result list', {query: state.currentSearchQuery}); return complete('empty result list'); }
       // Not the page we asked for - a 404, or a card Yandex redirected to. The
       // repair is to go to the right URL, not to fail the query and with it the
@@ -938,6 +957,12 @@
     await collectVisible(container, token);
     while (token === runToken) {
       beat();
+      // The card Yandex opened in place of a list has been read by the pass
+      // above. There is no list here to exhaust.
+      if (batch.status === BATCH.RUNNING && onOrgCard()) {
+        log('yandex answered with an organisation card', {unique:state.uniqueCount, query:state.currentSearchQuery});
+        return complete('organisation card');
+      }
       if (state.status === AUTO.PAUSED) { await sleep(300); continue; }
       if (state.status !== AUTO.RUNNING) return;
       if (challenged()) return requireAction();
