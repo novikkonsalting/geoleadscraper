@@ -1191,5 +1191,44 @@ section('an organisation card is an answer, not a list to scroll');
     /карточку организации/.test(done.warning || ''), done.warning);
 }
 
+// --- churches, mosques and the like ------------------------------------------
+section('религиозные учреждения')
+{
+  const rel = await loadExtension({ withStore: false });
+  const G = 'религиозные учреждения';
+  const cases = [
+    ['Православный храм', 'Православный храм', true], ['Православный храм', 'Церковь', true],
+    ['Часовня', 'Часовня', true], ['Монастырь', 'Монастырь', true],
+    ['Мечеть', 'Мечеть', true], ['Синагога', 'Синагога', true],
+    ['Католический / протестантский храм', 'Католический храм', true],
+    ['Католический / протестантский храм', 'Протестантская церковь', true],
+    ['Буддийский храм', 'Буддийский храм', true],
+    ['Религиозная организация', 'Религиозная организация', true],
+    ['Духовное учебное заведение', 'Духовная семинария', true],
+    ['Мечеть', 'Православный храм', false], ['Синагога', 'Кафе', false],
+  ];
+  const wrong = cases.filter(([c, rubric, want]) => rel.api.categoryMatch(c, rubric) !== want);
+  check('each religious category decides its own rubrics', wrong.length === 0, JSON.stringify(wrong));
+  check('the religious rubrics form a group of their own',
+    ['Православный храм', 'Мечеть', 'Синагога', 'Буддийский храм', 'Часовня']
+      .every(r => rel.api.categoryGroups(r).includes(G)));
+  check('and food rubrics are not dragged into it',
+    ['Кафе', 'Супермаркет, магазин продуктов', 'Пекарня', 'Сырная лавка', 'Хлебозавод']
+      .every(r => !rel.api.categoryGroups(r).includes(G)));
+
+  // As with production, a register that never asked for them does not gain them.
+  const church = { latitude: 55.6875, longitude: 37.5730, categories: 'Православный храм', detail_level: 'CARD' };
+  const foodQuery = { district: 'Академический', group: 'Общепит', category: 'Кафе', query: 'кафе Академический район Москва' };
+  rel.api.setRegisterGroups(['общепит', 'продуктовая розница']);
+  check('a church stays out of a register of shops and cafes',
+    !(await rel.api.evaluateItem(church, foodQuery)).accept);
+  rel.api.setRegisterGroups(['общепит', 'продуктовая розница', G]);
+  check('and comes in once the query list names the group',
+    (await rel.api.evaluateItem(church, foodQuery)).accept);
+  check('the export names the group properly',
+    (await rel.api.evaluateItem(church, { district: 'Академический', group: 'Религиозные учреждения', category: 'Православный храм', query: 'q' }))
+      .detectedGroups.includes('Религиозные учреждения'));
+}
+
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);
 process.exit(failures ? 1 : 0);
