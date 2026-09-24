@@ -1019,5 +1019,38 @@ section('categories a query list can now target directly');
     JSON.stringify(cat.api.categoryGroups('Супермаркет, кофе с собой, магазин продуктов')));
 }
 
+// --- food production: a third kind of organisation ---------------------------
+section('пищевое производство')
+{
+  const prod = await loadExtension({ withStore: true });
+  const G = 'пищевое производство';
+  const cases = [
+    ['Хлебозавод', 'Хлебозавод', true], ['Кондитерское производство', 'Производство кондитерских изделий', true],
+    ['Мясопереработка', 'Мясокомбинат', true], ['Молочное производство', 'Молочный завод', true],
+    ['Рыбопереработка', 'Рыбоперерабатывающий завод', true], ['Производство напитков', 'Производство напитков', true],
+    ['Пивоварня', 'Пивоварня', true], ['Производство полуфабрикатов', 'Производство полуфабрикатов', true],
+    ['Пищевые ингредиенты / специи', 'Пищевые ингредиенты и специи', true], ['Обжарка кофе', 'Обжарка кофе', true],
+    ['Пищевое производство', 'Производство продуктов питания', true],
+    ['Хлебозавод', 'Пекарня', false], ['Пивоварня', 'Бар, паб', false],
+  ];
+  const wrong = cases.filter(([c, rubric, want]) => prod.api.categoryMatch(c, rubric) !== want);
+  check('each production category decides its own rubrics', wrong.length === 0, JSON.stringify(wrong));
+  check('the production rubrics form a group of their own',
+    prod.api.categoryGroups('Хлебозавод').includes(G) && prod.api.categoryGroups('Пивоварня').includes(G));
+  check('and the export names that group instead of calling it retail',
+    (await prod.api.evaluateItem({ latitude: 55.6706, longitude: 37.5651, categories: 'Хлебозавод', detail_level: 'CARD' },
+      { district: 'Черёмушки', group: 'Пищевое производство', category: 'Хлебозавод', query: 'хлебозаводы Черёмушки Москва' }))
+      .detectedGroups.includes('Пищевое производство'));
+
+  // A register that never asked for production must not gain it.
+  prod.api.setRegisterGroups(['общепит', 'продуктовая розница']);
+  const plant = { latitude: 55.6706, longitude: 37.5651, categories: 'Хлебозавод', detail_level: 'CARD' };
+  check('a bread factory stays out of a register of shops and cafes',
+    !(await prod.api.evaluateItem(plant, { district: 'Черёмушки', group: 'Общепит', category: 'Кафе', query: 'кафе Черёмушки Москва' })).accept);
+  prod.api.setRegisterGroups(['общепит', 'продуктовая розница', G]);
+  check('and comes in once the query list names the group',
+    (await prod.api.evaluateItem(plant, { district: 'Черёмушки', group: 'Общепит', category: 'Кафе', query: 'кафе Черёмушки Москва' })).accept);
+}
+
 console.log(`\n${failures ? `${failures} FAILURES` : 'all checks passed'}`);
 process.exit(failures ? 1 : 0);
