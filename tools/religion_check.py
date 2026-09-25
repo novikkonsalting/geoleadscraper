@@ -205,7 +205,7 @@ def confession(text):
     for name, words in CONFESSIONS:
         if any(w in t for w in words):
             return name
-    return 'Православие' if re.search(r'православ|храм|церк|часовн|приход|подворь|монастыр|епархи|крест|икона|причт|трапезн|воскресная школа', t) else 'Другое'
+    return 'Православие' if re.search(r'православ|храм|церк|часовн|приход|подворь|монастыр|епархи|крест|икона|причт|трапезн|воскресная школа|преподобн|святител|священномуч', t) else 'Другое'
 
 
 def object_type(title, rubrics):
