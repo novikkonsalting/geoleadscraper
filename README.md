@@ -27,7 +27,7 @@ Google Maps и 2GIS части проекта не затрагиваются: �
 | `tools/embed-boundaries.mjs` | Генерирует встроенные границы из `data/uzao_districts.geojson`. |
 | `tools/fix-swapped-coords.mjs` | Чинит перевёрнутые latitude/longitude в уже выгруженном CSV. |
 | `data/uzao_districts.geojson` | Границы 12 районов ЮЗАО из OpenStreetMap (ODbL). |
-| `data/queries/` | Те же 132 запроса, разложенные по 11 на район. |
+| `data/queries/` | Те же 132 запроса, разложенные по 11 на район, и `13_religiya_dobor.csv` — 168 запросов досбора религиозных учреждений (14 на район, все конфессии). |
 | `tools/geo-check.mjs` | Контроль качества границ: regression probes, 16 контрольных точек, перекрытия, площади. |
 | `tools/analyze-raw.mjs` | Аудит RAW/FINAL CSV + прогон локального фильтра без Chrome. |
 
