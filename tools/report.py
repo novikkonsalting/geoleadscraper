@@ -10,6 +10,12 @@ from a hand-kept file appended as their own sheet.
     pip install openpyxl
     python3 tools/report.py --final FINAL_FILTERED-*.csv --out REESTR.xlsx
     python3 tools/report.py --final … --er "ЕР.xlsx" --per-district out/po_rayonam/
+    python3 tools/report.py --finalize --out REESTR.xlsx --per-district out/po_rayonam/
+
+--finalize takes books that already exist (possibly edited by hand) and only
+puts them in order: a Справка sheet first in every book, the party branches and
+the religious sheet right after the summary, districts numbered 01-12 in the
+same order as the per-district files. build() runs the same step at the end.
 
 Rules that matter and must not drift:
   * an organisation is identified by place_id, never by name or distance;
@@ -17,7 +23,7 @@ Rules that matter and must not drift:
   * a row whose groups include Религиозные учреждения goes to the religious
     sheet only - never into food, whatever else Yandex filed it under.
 """
-import argparse, csv, io, math, re, collections, os, sys
+import argparse, csv, datetime, glob, io, math, re, collections, os, sys
 
 try:
     from openpyxl import Workbook, load_workbook
@@ -171,6 +177,193 @@ def er_sheets(path):
     return header, rows
 
 
+FOOD_GROUPS = ('Общепит', 'Продуктовая розница', 'Пищевое производство')
+FIXED_SHEETS = ('Справка', 'Сводка', 'Единая Россия', 'Религия')
+NUMBERED = re.compile(r'^\d\d ')
+
+
+def plain(name):
+    return NUMBERED.sub('', name)
+
+
+def sheet_rows(sheet):
+    """Header and non-empty data rows of a working sheet."""
+    rows = [r for r in sheet.iter_rows(values_only=True) if any(v not in (None, '') for v in r)]
+    return (list(rows[0]), rows[1:]) if rows else ([], [])
+
+
+def group_counts(sheet):
+    """Counted from the Группа column when the sheet has one; an organisation
+    filed under two groups counts in both, so the groups don't add up."""
+    header, rows = sheet_rows(sheet)
+    counts = collections.Counter()
+    if 'Группа' in header:
+        k = header.index('Группа')
+        for r in rows:
+            for g in str(r[k] or '').split(' / '):
+                counts[g.strip()] += 1
+    return len(rows), counts
+
+
+def column_name(wb, *names):
+    """The first of names found in the book's headers: the generated sheets say
+    Карточка, the raw ones keep the export's maps_url."""
+    for sheet in wb:
+        header, _ = sheet_rows(sheet)
+        for name in names:
+            if name in header:
+                return f'«{name}»'
+    return f'«{names[0]}»'
+
+
+def help_sheet(wb, title, contents, date, district_file=False):
+    if 'Справка' in wb.sheetnames:
+        wb.remove(wb['Справка'])
+    ws = wb.create_sheet('Справка', 0)
+    ws['A1'] = title
+    ws['A1'].font = Font(bold=True, size=15)
+    ws['A2'] = f'Данные зафиксированы {date}. Источник организаций — Яндекс Карты, отделений партии — moscow.er.ru.'
+    ws['A2'].font = NOTE
+    ws.append([])
+    ws.append(['КАКИЕ ОРГАНИЗАЦИИ В ФАЙЛЕ'])
+    ws.cell(ws.max_row, 1).font = Font(bold=True, size=12)
+    ws.append(['Лист', 'Организаций', 'Что там'])
+    head = ws.max_row
+    for row in contents:
+        ws.append(row)
+        ws.cell(ws.max_row, 3).alignment = Alignment(wrap_text=True, vertical='top')
+        if row[0] == 'ВСЕГО':
+            for cell in ws[ws.max_row]:
+                cell.font = Font(bold=True)
+    for cell in ws[head]:
+        cell.font, cell.fill = HEAD, FILL
+    ws.append([])
+    ws.append(['ГРУППЫ'])
+    ws.cell(ws.max_row, 1).font = Font(bold=True, size=12)
+    for name, text in (
+        ('Общепит', 'кофейни, кафе, быстрое питание, рестораны, пекарни, пиццерии, столовые, бары'),
+        ('Продуктовая розница', 'супермаркеты, магазины продуктов, мяса, овощей и фруктов, рыбы, '
+                                'орехов, кулинарии, пива, чая'),
+        ('Пищевое производство', 'производства продуктов, пищевые ингредиенты и специи, оптовые поставщики'),
+        ('Религиозные учреждения', 'православные храмы, часовни, религиозные объединения, мечети, синагога. '
+                                   'В питание не входят, даже если Яндекс приписал им заодно кофейню'),
+        ('Единая Россия', 'районные местные отделения и окружное отделение ЮЗАО; ведутся вручную, '
+                          'Яндекс Картами не собирались'),
+    ):
+        ws.append([name, None, text])
+        ws.cell(ws.max_row, 1).font = Font(bold=True)
+        ws.cell(ws.max_row, 3).alignment = Alignment(wrap_text=True, vertical='top')
+    ws.append([])
+    ws.append(['КАК РАБОТАТЬ С ФАЙЛОМ'])
+    ws.cell(ws.max_row, 1).font = Font(bold=True, size=12)
+    steps = [
+        'Одна строка — одна организация (одна точка на карте). Одинаковые названия по разным адресам — '
+        'это разные точки, их не удаляют.',
+        'В строке заголовков включены фильтры: по ним отбирают нужные рубрики, строки с телефоном или сайтом.',
+        f'Ссылка в колонке {column_name(wb, "Карточка", "maps_url")} открывает карточку на Яндекс Картах — '
+        'по ней проверяют, работает ли организация и верен ли телефон.',
+        f'Колонка {column_name(wb, "Сеть", "chain_flag")} отмечает точки одной сети. '
+        'Их удобнее обрабатывать вместе: у сети часто общий телефон.',
+        'Район определён по координатам точки на карте, а не по тому, каким запросом она найдена.',
+    ]
+    if not district_file:
+        steps.insert(0, 'Листы районов пронумерованы 01–12 — так же, как отдельные файлы по районам.')
+    for k, text in enumerate(steps, 1):
+        ws.append([f'{k}.', None, text])
+        ws.cell(ws.max_row, 3).alignment = Alignment(wrap_text=True, vertical='top')
+    for i, width in enumerate([34, 14, 90], 1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+    return ws
+
+
+def food_note(counts):
+    parts = [f'{g.lower()} {counts[g]}' for g in FOOD_GROUPS if counts.get(g)]
+    if counts.get('—'):
+        parts.append(f'без рубрики {counts["—"]}')
+    return ', '.join(parts)
+
+
+def renumber_summary(ws, numbers):
+    """Summary rows follow the district numbers instead of size."""
+    found = [i for i in range(1, ws.max_row + 1) if plain(str(ws.cell(i, 1).value or '')) in numbers]
+    if not found:
+        return
+    values = {plain(str(ws.cell(i, 1).value)): [c.value for c in ws[i]] for i in found}
+    for i, name in zip(found, sorted(values, key=numbers.get)):
+        for c, v in enumerate(values[name], 1):
+            ws.cell(i, c).value = v
+        ws.cell(i, 1).value = f'{numbers[name]:02d} {name}'
+
+
+def finalize(out, per_district=None, date=None):
+    date = date or datetime.date.today().strftime('%d.%m.%Y')
+    files = {}
+    if per_district:
+        for path in sorted(glob.glob(os.path.join(per_district, '[0-9][0-9]_*.xlsx'))):
+            stem = os.path.splitext(os.path.basename(path))[0]
+            files[stem[3:].replace('_', ' ')] = (int(stem[:2]), path)
+
+    district_stats = {}
+    for district, (n, path) in files.items():
+        book = load_workbook(path)
+        total, counts = group_counts(book['Организации']) if 'Организации' in book.sheetnames else (0, {})
+        rel = len(sheet_rows(book['Религия'])[1]) if 'Религия' in book.sheetnames else 0
+        er = len(sheet_rows(book['Единая Россия'])[1]) if 'Единая Россия' in book.sheetnames else 0
+        district_stats[district] = (total, counts)
+        contents = [['Организации', total, 'питание: ' + (food_note(counts) or '—')]]
+        if rel:
+            contents.append(['Религия', rel, 'религиозные учреждения района'])
+        if er:
+            contents.append(['Единая Россия', er, 'отделение района и окружное отделение ЮЗАО'])
+        help_sheet(book, f'{n:02d}. РАЙОН {district.upper()}', contents, date, district_file=True)
+        book.save(path)
+
+    wb = load_workbook(out)
+    districts = [plain(n) for n in wb.sheetnames if plain(n) not in FIXED_SHEETS + ('Все организации', 'Сети')]
+    numbers = {d: files[d][0] for d in districts if d in files}
+    for d in sorted(d for d in districts if d not in numbers):
+        numbers[d] = max(numbers.values(), default=0) + 1
+    for sheet in wb:
+        if plain(sheet.title) in numbers:
+            sheet.title = f'{numbers[plain(sheet.title)]:02d} {plain(sheet.title)}'
+    if 'Сводка' in wb.sheetnames:
+        renumber_summary(wb['Сводка'], numbers)
+
+    contents, food_total, mismatch = [], 0, []
+    for name in ('Единая Россия', 'Религия'):
+        if name in wb.sheetnames:
+            what = ('отделения партии: районные и окружное ЮЗАО' if name == 'Единая Россия'
+                    else 'религиозные учреждения всех районов')
+            contents.append([name, len(sheet_rows(wb[name])[1]), what])
+    for d in sorted(numbers, key=numbers.get):
+        sheet = wb[f'{numbers[d]:02d} {d}']
+        total, counts = group_counts(sheet)
+        if not counts and d in district_stats:
+            if district_stats[d][0] != total:
+                mismatch.append(f'{d}: в общем файле {total}, в файле района {district_stats[d][0]}')
+            counts = district_stats[d][1]
+        food_total += total
+        contents.append([sheet.title, total, 'питание: ' + (food_note(counts) or '—')])
+    contents.append(['ВСЕГО', food_total + sum(r[1] for r in contents[:2] if r[0] in FIXED_SHEETS),
+                     f'питание {food_total} + религия и отделения партии'])
+    help_sheet(wb, 'РЕЕСТР ОРГАНИЗАЦИЙ ЮЗАО', contents, date)
+
+    first = [n for n in FIXED_SHEETS if n in wb.sheetnames]
+    ordered = first + [f'{numbers[d]:02d} {d}' for d in sorted(numbers, key=numbers.get)]
+    ordered += [n for n in wb.sheetnames if n not in ordered]
+    wb._sheets = [wb[n] for n in ordered]
+    wb.active = 0
+    for sheet in wb:
+        sheet.sheet_view.tabSelected = sheet.title == 'Справка'
+    wb.save(out)
+
+    print(f'{out}: листы — ' + ', '.join(ordered))
+    if files:
+        print(f'{per_district}: справка добавлена в {len(files)} файлов')
+    for line in mismatch:
+        print('РАСХОЖДЕНИЕ', line)
+
+
 def build(args):
     rows = read_final(args.final)
     religion = [r for r in rows if RELIGION in groups_of(r)]
@@ -319,16 +512,27 @@ def build(args):
     flagged = [r for r in religion if r['_dup']]
     if flagged:
         print(f'помечено как возможные дубли: {len(flagged)} строк (колонка «Возможный дубль»)')
+    finalize(args.out, args.per_district, args.date)
 
 
 def main():
     p = argparse.ArgumentParser(description='Рабочий отчёт из выгрузки FINAL_FILTERED')
-    p.add_argument('--final', required=True, help='CSV выгрузки FINAL_FILTERED из расширения')
+    p.add_argument('--final', help='CSV выгрузки FINAL_FILTERED из расширения')
+    p.add_argument('--finalize', action='store_true',
+                   help='не собирать заново, а доработать готовые --out и --per-district: '
+                        'справка, порядок листов, номера районов')
+    p.add_argument('--date', help='дата фиксации данных для справки, ДД.ММ.ГГГГ (по умолчанию сегодня)')
     p.add_argument('--er', help='xlsx с отделениями партии (ведётся вручную, необязателен)')
     p.add_argument('--out', default='REESTR_otchet.xlsx', help='куда сохранить книгу')
     p.add_argument('--csv-dir', help='также выгрузить питание и религию отдельными CSV')
     p.add_argument('--per-district', help='папка для отдельных xlsx по каждому району')
-    build(p.parse_args())
+    args = p.parse_args()
+    if args.finalize:
+        finalize(args.out, args.per_district, args.date)
+    elif args.final:
+        build(args)
+    else:
+        p.error('нужен --final (собрать отчёт) или --finalize (доработать готовый)')
 
 
 if __name__ == '__main__':
