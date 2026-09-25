@@ -9,7 +9,7 @@ from a hand-kept file appended as their own sheet.
 
     pip install openpyxl
     python3 tools/report.py --final FINAL_FILTERED-*.csv --out REESTR.xlsx
-    python3 tools/report.py --final … --er "ЕР.xlsx" --csv-dir out/
+    python3 tools/report.py --final … --er "ЕР.xlsx" --per-district out/po_rayonam/
 
 Rules that matter and must not drift:
   * an organisation is identified by place_id, never by name or distance;
@@ -272,6 +272,36 @@ def build(args):
 
     wb.save(args.out)
 
+    if args.per_district:
+        os.makedirs(args.per_district, exist_ok=True)
+        rel_by_district = collections.defaultdict(list)
+        for row in religion:
+            rel_by_district[row['detected_district']].append(row)
+        er_by_district = collections.defaultdict(list)
+        for row in er:
+            er_by_district[(row[0] or '').strip()].append(row)
+        for n, (district, v) in enumerate(sorted(by_district.items()), 1):
+            book = Workbook()
+            book.remove(book.active)
+            working_sheet(book, 'Организации', v)
+            if rel_by_district.get(district):
+                working_sheet(book, 'Религия', rel_by_district[district], dup=True)
+            own_er = er_by_district.get(district, []) + er_by_district.get('ЮЗАО', [])
+            if own_er and header:
+                sheet = book.create_sheet('Единая Россия')
+                sheet.append(header)
+                for row in own_er:
+                    sheet.append(row)
+                for cell in sheet[1]:
+                    cell.font, cell.fill = HEAD, FILL
+                    cell.alignment = Alignment(wrap_text=True, vertical='center')
+                for i, width in enumerate([18, 26, 46, 30, 44, 22, 28, 16, 14, 30, 40], 1):
+                    sheet.column_dimensions[get_column_letter(i)].width = width
+                sheet.freeze_panes = 'A2'
+            name = f"{n:02d}_{district.replace(' ', '_')}.xlsx"
+            book.save(os.path.join(args.per_district, name))
+        print(f'{args.per_district}: {len(by_district)} файлов по районам')
+
     if args.csv_dir:
         os.makedirs(args.csv_dir, exist_ok=True)
         fields = [f for f in rows[0] if not f.startswith('_')]
@@ -297,6 +327,7 @@ def main():
     p.add_argument('--er', help='xlsx с отделениями партии (ведётся вручную, необязателен)')
     p.add_argument('--out', default='REESTR_otchet.xlsx', help='куда сохранить книгу')
     p.add_argument('--csv-dir', help='также выгрузить питание и религию отдельными CSV')
+    p.add_argument('--per-district', help='папка для отдельных xlsx по каждому району')
     build(p.parse_args())
 
 
