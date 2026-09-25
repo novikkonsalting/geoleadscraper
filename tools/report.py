@@ -330,6 +330,90 @@ def extra_religion_sheet(wb, rows):
                                'регистрации, а не всегда место богослужения.').font = NOTE
 
 
+# Rubric words that put a card into a food group, for cards fetched after the
+# export (the extension decides this at filter time; these are its cues).
+RUBRIC_GROUPS = [
+    ('Общепит', ('ресторан', 'кафе', 'быстрое питание', 'пиццер', 'суши', 'кофейн', 'кофе с собой', 'бар',
+                 'столов', 'доставка еды', 'чайхан', 'пекарн', 'кондитерск')),
+    ('Продуктовая розница', ('супермаркет', 'гипермаркет', 'магазин продуктов', 'минимаркет', 'магазин мяса',
+                             'мясная', 'магазин здорового питания', 'продукты питания')),
+    ('Пищевое производство', ('производство продуктов', 'пищевое производство')),
+]
+
+
+def groups_for(rubrics):
+    r = (rubrics or '').lower()
+    return ' / '.join(g for g, words in RUBRIC_GROUPS if any(w in r for w in words)) or '—'
+
+
+def patch_cards(out, per_district, cards):
+    """Fills in rows the export left bare (detail_level LIST_ONLY: the card
+    fetch failed, so only name and coordinates came through) from cards read
+    later. Rows are found by place_id and nothing else; a place_id not in the
+    books is reported, never added."""
+    fields = {'Рубрики': 'categories', 'Адрес': 'address', 'Телефон': 'phone', 'Сайт': 'website',
+              'Часы работы': 'hours', 'Рейтинг': 'rating', 'Отзывов': 'reviews'}
+    raw_cols = {'address': 'address', 'phone': 'phone', 'website': 'website', 'categories': 'categories',
+                'opening_hours': 'hours', 'rating': 'rating', 'review_count': 'reviews'}
+    found, district_counts = set(), {}
+
+    def fill(sheet, colmap, group_col=None):
+        header = [c.value for c in sheet[1]]
+        if 'place_id' not in header:
+            return
+        k = header.index('place_id') + 1
+        for row in range(2, sheet.max_row + 1):
+            pid = str(sheet.cell(row, k).value or '')
+            card = cards.get(pid)
+            if not card:
+                continue
+            found.add(pid)
+            for col, key in colmap.items():
+                if col in header and card.get(key) not in (None, ''):
+                    cell = sheet.cell(row, header.index(col) + 1)
+                    cell.value = card[key]
+                    if key == 'website':
+                        cell.hyperlink, cell.font = card[key], LINK
+            if group_col and group_col in header:
+                sheet.cell(row, header.index(group_col) + 1).value = groups_for(card.get('categories'))
+
+    if per_district:
+        for path in sorted(glob.glob(os.path.join(per_district, '[0-9][0-9]_*.xlsx'))):
+            book = load_workbook(path)
+            if 'Организации' in book.sheetnames:
+                fill(book['Организации'], fields, 'Группа')
+                district_counts[os.path.basename(path)[3:-5].replace('_', ' ')] = group_counts(book['Организации'])[1]
+            book.save(path)
+    wb = load_workbook(out)
+    for sheet in wb:
+        if plain(sheet.title) not in FIXED_SHEETS + ('Все организации', 'Сети'):
+            fill(sheet, raw_cols if 'title' in [c.value for c in sheet[1]] else fields, 'Группа')
+    if 'Сводка' in wb.sheetnames and district_counts:
+        ws = wb['Сводка']
+        for i in range(1, ws.max_row + 1):
+            header = [c.value for c in ws[i]]
+            if header[:2] != ['Район', 'Организаций']:
+                continue
+            cols = {name: header.index(name) + 1 for name in FOOD_GROUPS + ('Без рубрик',) if name in header}
+            totals = collections.Counter()
+            j = i + 1
+            while ws.cell(j, 1).value and ws.cell(j, 1).value != 'ВСЕГО':
+                counts = district_counts.get(plain(str(ws.cell(j, 1).value)))
+                if counts is not None:
+                    for name, c in cols.items():
+                        ws.cell(j, c).value = counts.get('—' if name == 'Без рубрик' else name, 0)
+                for name, c in cols.items():
+                    totals[name] += ws.cell(j, c).value or 0
+                j += 1
+            if ws.cell(j, 1).value == 'ВСЕГО':
+                for name, c in cols.items():
+                    ws.cell(j, c).value = totals[name]
+            break
+    wb.save(out)
+    missing = set(cards) - found
+    print(f'дополнено карточек: {len(found)} из {len(cards)}' + (f'; нет в книгах: {", ".join(sorted(missing))}' if missing else ''))
+
+
 def finalize(out, per_district=None, date=None, extra=None):
     date = date or datetime.date.today().strftime('%d.%m.%Y')
     files = {}
@@ -565,6 +649,8 @@ def main():
     p.add_argument('--finalize', action='store_true',
                    help='не собирать заново, а доработать готовые --out и --per-district: '
                         'справка, порядок листов, номера районов')
+    p.add_argument('--patch-cards', help='JSON {place_id: {address, categories, phone, website, hours, rating, '
+                                         'reviews}}: дополнить строки, для которых карточка не загрузилась')
     p.add_argument('--extra-religion', help='JSON из tools/religion_check.py --dobor: лист «Религия — вне Карт»')
     p.add_argument('--date', help='дата фиксации данных для справки, ДД.ММ.ГГГГ (по умолчанию сегодня)')
     p.add_argument('--er', help='xlsx с отделениями партии (ведётся вручную, необязателен)')
@@ -573,6 +659,8 @@ def main():
     p.add_argument('--per-district', help='папка для отдельных xlsx по каждому району')
     args = p.parse_args()
     extra = json.load(open(args.extra_religion, encoding='utf-8')) if args.extra_religion else None
+    if args.patch_cards:
+        patch_cards(args.out, args.per_district, json.load(open(args.patch_cards, encoding='utf-8')))
     if args.finalize:
         finalize(args.out, args.per_district, args.date, extra)
     elif args.final:
