@@ -422,6 +422,87 @@ def patch_cards(out, per_district, cards):
     print(f'дополнено карточек: {len(found)} из {len(cards)}' + (f'; нет в книгах: {", ".join(sorted(missing))}' if missing else ''))
 
 
+def remove_ids(out, per_district, ids):
+    """Takes rows out by place_id - for organisations Yandex marks as closed
+    for good - renumbers the district books and recounts the summary from what
+    is left. Nothing else identifies a row."""
+    ids = {str(i) for i in ids}
+    removed = []
+
+    def drop(sheet):
+        header = [c.value for c in sheet[1]]
+        if 'place_id' not in header:
+            return
+        k = header.index('place_id') + 1
+        name = header.index('Название') + 1 if 'Название' in header else header.index('title') + 1
+        for row in range(sheet.max_row, 1, -1):
+            if str(sheet.cell(row, k).value or '') in ids:
+                removed.append(f'{sheet.title}: {sheet.cell(row, name).value}')
+                sheet.delete_rows(row)
+        if '№' in header:
+            n = 0
+            for row in range(2, sheet.max_row + 1):
+                if sheet.cell(row, 2).value not in (None, ''):
+                    n += 1
+                    sheet.cell(row, 1).value = n
+        if sheet.auto_filter.ref:
+            sheet.auto_filter.ref = f'A1:{get_column_letter(len(header))}{sheet.max_row}'
+
+    counts = {}
+    if per_district:
+        for path in sorted(glob.glob(os.path.join(per_district, '[0-9][0-9]_*.xlsx'))):
+            book = load_workbook(path)
+            for name in ('Организации', 'Религия'):
+                if name in book.sheetnames:
+                    drop(book[name])
+            if 'Организации' in book.sheetnames:
+                counts[os.path.basename(path)[3:-5].replace('_', ' ')] = group_counts(book['Организации'])[1]
+            book.save(path)
+    wb = load_workbook(out)
+    for sheet in wb:
+        if plain(sheet.title) not in ('Справка', 'Сводка', 'Единая Россия', EXTRA_RELIGION, 'Сети'):
+            drop(sheet)
+    if 'Сводка' in wb.sheetnames:
+        ws = wb['Сводка']
+        for i in range(1, ws.max_row + 1):
+            header = [c.value for c in ws[i]]
+            if header[:2] != ['Район', 'Организаций']:
+                continue
+            col = {h: n + 1 for n, h in enumerate(header) if h}
+            totals, j = collections.Counter(), i + 1
+            while ws.cell(j, 1).value and ws.cell(j, 1).value != 'ВСЕГО':
+                d = plain(str(ws.cell(j, 1).value))
+                sheet = next((wb[t] for t in wb.sheetnames if plain(t) == d), None)
+                if sheet is not None:
+                    h, rows = sheet_rows(sheet)
+                    values = {'Организаций': len(rows)}
+                    if 'chain_flag' in h:
+                        values['Сетевых'] = sum(1 for r in rows if r[h.index('chain_flag')])
+                    if 'district_validation' in h:
+                        values['Найдено запросом другого района'] = sum(
+                            1 for r in rows if r[h.index('district_validation')] == 'REASSIGNED')
+                    g = counts.get(d, {})
+                    for name in FOOD_GROUPS:
+                        values[name] = g.get(name, 0)
+                    values['Без рубрик'] = g.get('—', 0)
+                    for name, v in values.items():
+                        if name in col:
+                            ws.cell(j, col[name]).value = v
+                for name, c in col.items():
+                    if name != 'Район':
+                        totals[name] += ws.cell(j, c).value or 0
+                j += 1
+            if ws.cell(j, 1).value == 'ВСЕГО':
+                for name, c in col.items():
+                    if name != 'Район':
+                        ws.cell(j, c).value = totals[name]
+            break
+    wb.save(out)
+    print(f'удалено строк: {len(removed)}')
+    for line in removed:
+        print('  ' + line)
+
+
 def finalize(out, per_district=None, date=None, extra=None):
     date = date or datetime.date.today().strftime('%d.%m.%Y')
     files = {}
@@ -657,6 +738,7 @@ def main():
     p.add_argument('--finalize', action='store_true',
                    help='не собирать заново, а доработать готовые --out и --per-district: '
                         'справка, порядок листов, номера районов')
+    p.add_argument('--remove-ids', help='JSON-список place_id, которые убрать из готовых книг (закрытые навсегда)')
     p.add_argument('--patch-cards', help='JSON {place_id: {address, categories, phone, website, hours, rating, '
                                          'reviews}}: дополнить строки, для которых карточка не загрузилась')
     p.add_argument('--extra-religion', help='JSON из tools/religion_check.py --dobor: лист «Религия — вне Карт»')
@@ -667,6 +749,8 @@ def main():
     p.add_argument('--per-district', help='папка для отдельных xlsx по каждому району')
     args = p.parse_args()
     extra = json.load(open(args.extra_religion, encoding='utf-8')) if args.extra_religion else None
+    if args.remove_ids:
+        remove_ids(args.out, args.per_district, json.load(open(args.remove_ids, encoding='utf-8')))
     if args.patch_cards:
         patch_cards(args.out, args.per_district, json.load(open(args.patch_cards, encoding='utf-8')))
     if args.finalize:
