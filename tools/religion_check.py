@@ -138,12 +138,16 @@ def egrul_name(s):
                   lambda m: f' {m.group(1)} {m.group(2).upper()}', s)
 
 
+STEM_STOP = {'москов', 'правос', 'религи', 'органи', 'местна', 'епархи', 'патриа', 'россий', 'русско'}
+
+
 def name_key(s):
-    s = re.sub(r'[^а-я0-9 ]', ' ', (s or '').lower().replace('ё', 'е'))
-    return {w[:6] for w in s.split() if w not in NAME_STOP and len(w) > 2}
+    s = re.sub(r'\([^)]*\)', ' ', (s or '').lower().replace('ё', 'е'))
+    s = re.sub(r'[^а-я0-9 ]', ' ', s)
+    return {w[:6] for w in s.split() if w not in NAME_STOP and len(w) > 3 and w[:6] not in STEM_STOP}
 
 
-PLACE = re.compile(r'\s(?:в|во|на)\s+((?!Земле)[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)')
+PLACE = re.compile(r'\s(?:в|во|на)\s+((?!Земле)[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?|усадьбе\s+\S+)')
 
 
 def place_word(s):
@@ -165,10 +169,13 @@ def district_in_name(s):
 def card_score(name, card):
     """name_score, but a name that says 'в Ясеневе' does not match a card
     standing in Черёмушки."""
+    score = name_score(name, card['title'])
     d = district_in_name(name)
-    if d and card.get('_d') and card['_d'] != d:
+    # Old place names drift across district borders ('в Черемушках' stands in
+    # Ломоносовский), so the district only decides for short, generic names.
+    if d and card.get('_d') and card['_d'] != d and (score < 0.8 or len(name_key(PLACE.sub(' ', name))) < 2):
         return 0.0
-    return name_score(name, card['title'])
+    return score
 
 
 def name_score(a, b):
@@ -212,6 +219,43 @@ def object_type(title, rubrics):
     if 'часовн' in t or r.startswith('часовня'):
         return 'Часовня'
     return 'Храм / религиозная организация'
+
+
+def district_mentioned(text):
+    t = (text or '').lower().replace('ё', 'е')
+    for d in DISTRICTS:
+        stem = d.lower().replace('ё', 'е')
+        if stem[:-1] in t or f'«{stem}»' in t:
+            return d
+    return district_in_name(text)
+
+
+def diocese_kind(name, pripis):
+    n = name.lower()
+    if 'часовн' in n:
+        return 'Часовня'
+    if 'домовый' in n or ' при ' in n or re.search(r'\sв\s(гку|государствен|хоспис|учебном)', n):
+        return 'Домовый храм при учреждении'
+    return 'Приписной храм' if pripis else 'Храм'
+
+
+def osm_confession(tags):
+    rel, den = tags.get('religion', ''), tags.get('denomination', '')
+    if rel == 'christian':
+        return 'Протестанты' if den in ('presbyterian', 'baptist', 'evangelical', 'pentecostal', 'lutheran',
+                                        'protestant', 'adventist') else ('Католики' if den == 'catholic' else 'Православие')
+    return {'buddhist': 'Буддизм', 'muslim': 'Ислам', 'jewish': 'Иудаизм'}.get(rel, 'Другое')
+
+
+def egrul_kind(name):
+    n = name.upper()
+    if 'СИНОДАЛЬН' in n:
+        return 'Синодальное учреждение'
+    if 'ПОДВОРЬЕ' in n:
+        return 'Подворье'
+    if 'ЦЕНТРАЛИЗОВАНН' in n:
+        return 'Централизованная организация'
+    return 'Приход / община'
 
 
 # --- sources ------------------------------------------------------------------
@@ -277,6 +321,7 @@ def main():
     p.add_argument('--egrul-cards', help='JSON карточек pb.nalog.ru по ИНН')
     p.add_argument('--date', default='', help='дата выгрузки источников для справки')
     p.add_argument('--out', default='SVERKA_religiya.xlsx')
+    p.add_argument('--dobor', help='куда записать JSON найденного вне Карт (для report.py --extra-religion)')
     a = p.parse_args()
 
     polys = load_polygons(a.boundaries)
@@ -284,6 +329,7 @@ def main():
     for o in ours:
         o['_d'] = district_of(polys, o['_lat'], o['_lon']) if o['_lat'] is not None else ''
     index, by_street = address_index(a.osm_addr) if a.osm_addr else ({}, {})
+    extra = []
     wb = Workbook()
     summary = wb.active
     summary.title = 'Итоги'
@@ -333,15 +379,28 @@ def main():
                 score, best = max(((card_score(name, o), o) for o in ours), key=lambda x: x[0])
                 where = ''
                 if i == 0 and d.get('addr') and index:
-                    m = re.search(r'([А-Яа-яЁё\.\- ]+?(?:ул\.?|улица|просп\.?|проспект|пр-т\.?|бульвар|б-р|проезд|шоссе|наб\.?)'
+                    m = re.search(r'([А-Яа-яЁё\.\- ]*?(?:ул\.?|улица|просп\.?|проспект|пр-т\.?|бульвар|б-р|проезд|шоссе|наб\.?)'
                                   r'[А-Яа-яЁё\.\- ]*?),?\s*(?:д\.|дом|вл\.?)?\s*([0-9]+[А-Яа-я]?)', d['addr'])
                     if m and (street_key(m.group(1)), house_key(m.group(2))) in index:
                         pt = index[(street_key(m.group(1)), house_key(m.group(2)))]
                         where = district_of(polys, *pt) or 'вне ЮЗАО'
                         gap, o = nearest(ours, *pt)
-                        if gap <= NEAR_METRES and score < 0.5:
-                            score, best = 0.5, o
+                        if gap <= NEAR_METRES:
+                            plain_score = name_score(name, o['title'])
+                            if plain_score >= max(score, 0.5):
+                                score, best = max(plain_score, 0.6), o
+                            elif score < 0.5:
+                                score, best = 0.5, o
                 status = 'есть на Картах' if score >= 0.6 else ('проверить' if score >= 0.4 else 'нет на Картах')
+                outside = any(name_score(name, r['title']) >= 0.8 and place_word(name) == place_word(r['title'])
+                              for r in raw_religious)
+                if status == 'нет на Картах' and where != 'вне ЮЗАО' and not outside \
+                        and 'Московская обл' not in name + d.get('addr', ''):
+                    extra.append(dict(district=where or district_mentioned(name + ' ' + (d.get('addr') or '')), name=name,
+                                      confession='Православие', kind=diocese_kind(name, i),
+                                      address=d.get('addr', '') if i == 0 else '', phone=d.get('phone', '') if i == 0 else '',
+                                      source='Список храмов викариатства', ref=d.get('url', ''),
+                                      note=f"{d.get('blag', '')} благочиние" + (f"; приписной к «{d['name']}»" if i else '')))
                 rows.append([status, name, 'приписной' if i else 'храм', d.get('blag', ''), d.get('addr', '') if i == 0 else '',
                              where, d.get('phone', '') if i == 0 else '', best['title'] if status != 'нет на Картах' else '',
                              round(score, 2), d.get('url', '')])
@@ -365,6 +424,11 @@ def main():
                 continue
             t = e.get('tags', {})
             gap, o = nearest(ours, lat, lon)
+            if gap > NEAR_METRES and t.get('name'):
+                extra.append(dict(district=d, name=t['name'], confession=osm_confession(t), kind='Место богослужения',
+                                  address=' '.join(filter(None, [t.get('addr:street'), t.get('addr:housenumber')])),
+                                  phone=t.get('phone', '') or t.get('contact:phone', ''), source='OpenStreetMap',
+                                  ref=f"https://www.openstreetmap.org/{e['type']}/{e['id']}", note=''))
             rows.append(['есть на Картах' if gap <= NEAR_METRES else 'нет на Картах', d, t.get('name', '(без названия)'),
                          t.get('religion', ''), t.get('denomination', ''),
                          ' '.join(filter(None, [t.get('addr:street'), t.get('addr:housenumber')])),
@@ -411,6 +475,16 @@ def main():
                 gap, near = nearest(ours, *pt)
                 if gap <= NEAR_METRES and near in same and card_score(key, near) >= 0.4:
                     match = near['title']
+            # A synodal office or a monastery body sits in a building the
+            # register already has; a parish registered elsewhere does not.
+            if not match and pt and 'ПРИХОД' not in name.upper():
+                gap, near = nearest(ours, *pt)
+                if gap <= NEAR_METRES and near in same:
+                    match = near['title'] + ' (по адресу)'
+            if not match:
+                extra.append(dict(district=d, name=name, confession=conf, kind=egrul_kind(name),
+                                  address=card.get('АдресРФ') or '', phone='', source='ЕГРЮЛ (ОКВЭД 94.91)',
+                                  ref=f'ИНН {inn}', note='юридический адрес' + ('' if 'дом' in how or 'округ' in how else '; ' + how)))
             rows.append(['есть на Картах' if match else 'нет на Картах', d, conf, name, card.get('АдресРФ'),
                          how, match, inn, card.get('ОГРН'), listed.get(inn, {}).get('dtogrn', '')])
         rows.sort(key=lambda r: (r[0] != 'нет на Картах', r[2], r[1]))
@@ -424,6 +498,33 @@ def main():
                       f'в ЮЗАО {len(rows)}: ' + ', '.join(f'{k.lower()} {v}' for k, v in c.most_common())))
         c2 = collections.Counter(r[0] for r in rows)
         lines.append(('  из них', ', '.join(f'{k} {v}' for k, v in c2.items())))
+
+    # 6. one list of what the sources know and the map does not, each
+    # organisation once: the diocese list first, then OSM, then ЕГРЮЛ.
+    merged = []
+    for e in extra:
+        key = egrul_name(e['name'])
+        for m in merged:
+            legal = 'ЕГРЮЛ' in e['source'] or 'ЕГРЮЛ' in m['source']
+            if (legal or not e['district'] or not m['district'] or e['district'] == m['district']) \
+                    and m['confession'] == e['confession'] and name_score(key, egrul_name(m['name'])) >= 0.6:
+                m['source'] += f"; {e['source']}"
+                m['ref'] += f"; {e['ref']}"
+                m['district'] = m['district'] or e['district']
+                m['address'] = m['address'] or e['address']
+                m['phone'] = m['phone'] or e['phone']
+                break
+        else:
+            merged.append(dict(e))
+    merged.sort(key=lambda e: (e['district'] or 'я', e['confession'] != 'Православие', e['confession'], e['name']))
+    sheet(wb, 'Нет на Картах', ['Район', 'Название', 'Конфессия', 'Вид', 'Адрес', 'Телефон', 'Источник', 'Ссылка / номер', 'Примечание'],
+          [[e['district'] or 'не указан', e['name'], e['confession'], e['kind'], e['address'], e['phone'], e['source'],
+            e['ref'], e['note']] for e in merged], [16, 50, 14, 24, 40, 18, 26, 34, 34],
+          'Объединено по трём источникам, повторы между источниками сведены в одну строку.')
+    lines.append(('Нет на Картах, всего', f'{len(merged)}: ' + ', '.join(
+        f'{k.lower()} {v}' for k, v in collections.Counter(e['confession'] for e in merged).most_common())))
+    if a.dobor:
+        json.dump(merged, open(a.dobor, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
 
     summary['A1'] = 'СВЕРКА РЕЛИГИОЗНЫХ УЧРЕЖДЕНИЙ ЮЗАО'
     summary['A1'].font = Font(bold=True, size=14)

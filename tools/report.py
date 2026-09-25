@@ -23,7 +23,7 @@ Rules that matter and must not drift:
   * a row whose groups include Религиозные учреждения goes to the religious
     sheet only - never into food, whatever else Yandex filed it under.
 """
-import argparse, csv, datetime, glob, io, math, re, collections, os, sys
+import argparse, csv, datetime, glob, io, json, math, re, collections, os, sys
 
 try:
     from openpyxl import Workbook, load_workbook
@@ -178,7 +178,9 @@ def er_sheets(path):
 
 
 FOOD_GROUPS = ('Общепит', 'Продуктовая розница', 'Пищевое производство')
-FIXED_SHEETS = ('Справка', 'Сводка', 'Единая Россия', 'Религия')
+EXTRA_RELIGION = 'Религия — вне Карт'
+FIXED_SHEETS = ('Справка', 'Сводка', 'Единая Россия', 'Религия', EXTRA_RELIGION)
+EXTRA_WHAT = 'храмы и общины из списка епархии, OpenStreetMap и ЕГРЮЛ, которых нет на Яндекс Картах'
 NUMBERED = re.compile(r'^\d\d ')
 
 
@@ -295,7 +297,40 @@ def renumber_summary(ws, numbers):
         ws.cell(i, 1).value = f'{numbers[name]:02d} {name}'
 
 
-def finalize(out, per_district=None, date=None):
+def extra_religion_sheet(wb, rows):
+    """What other sources know and the map does not (tools/religion_check.py
+    --dobor). These rows have no place_id, so they never join the Религия sheet:
+    they sit next to it, each with the source it came from."""
+    if EXTRA_RELIGION in wb.sheetnames:
+        wb.remove(wb[EXTRA_RELIGION])
+    if not rows:
+        return
+    at = wb.sheetnames.index('Религия') + 1 if 'Религия' in wb.sheetnames else len(wb.sheetnames)
+    ws = wb.create_sheet(EXTRA_RELIGION, at)
+    cols = [('№', 5), ('Район', 16), ('Название', 50), ('Конфессия', 14), ('Вид', 24), ('Адрес', 40), ('Телефон', 18),
+            ('Источник', 26), ('Ссылка / номер', 34), ('Примечание', 34)]
+    ws.append([c for c, _ in cols])
+    for n, e in enumerate(rows, 1):
+        ws.append([n, e['district'] or 'не указан', e['name'], e['confession'], e['kind'], e['address'], e['phone'],
+                   e['source'], e['ref'], e['note']])
+        ref = str(e['ref']).split(';')[0].strip()
+        if ref.startswith('http'):
+            ws.cell(ws.max_row, 9).hyperlink = ref
+            ws.cell(ws.max_row, 9).font = LINK
+    for cell in ws[1]:
+        cell.font, cell.fill = HEAD, FILL
+        cell.alignment = Alignment(wrap_text=True, vertical='center')
+    for i, (_, w) in enumerate(cols, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+        for row in ws.iter_rows(min_row=2, min_col=i, max_col=i):
+            row[0].alignment = Alignment(wrap_text=True, vertical='top')
+    ws.freeze_panes = 'A2'
+    ws.auto_filter.ref = f'A1:{get_column_letter(len(cols))}{ws.max_row}'
+    ws.cell(ws.max_row + 2, 1, 'Этих организаций нет на Яндекс Картах. У строк из ЕГРЮЛ адрес юридический: это место '
+                               'регистрации, а не всегда место богослужения.').font = NOTE
+
+
+def finalize(out, per_district=None, date=None, extra=None):
     date = date or datetime.date.today().strftime('%d.%m.%Y')
     files = {}
     if per_district:
@@ -309,16 +344,23 @@ def finalize(out, per_district=None, date=None):
         total, counts = group_counts(book['Организации']) if 'Организации' in book.sheetnames else (0, {})
         rel = len(sheet_rows(book['Религия'])[1]) if 'Религия' in book.sheetnames else 0
         er = len(sheet_rows(book['Единая Россия'])[1]) if 'Единая Россия' in book.sheetnames else 0
+        if extra is not None:
+            extra_religion_sheet(book, [e for e in extra if e['district'] == district])
+        more = len(sheet_rows(book[EXTRA_RELIGION])[1]) - 1 if EXTRA_RELIGION in book.sheetnames else 0
         district_stats[district] = (total, counts)
         contents = [['Организации', total, 'питание: ' + (food_note(counts) or '—')]]
         if rel:
             contents.append(['Религия', rel, 'религиозные учреждения района'])
+        if more:
+            contents.append([EXTRA_RELIGION, more, EXTRA_WHAT])
         if er:
             contents.append(['Единая Россия', er, 'отделение района и окружное отделение ЮЗАО'])
         help_sheet(book, f'{n:02d}. РАЙОН {district.upper()}', contents, date, district_file=True)
         book.save(path)
 
     wb = load_workbook(out)
+    if extra is not None:
+        extra_religion_sheet(wb, extra)
     districts = [plain(n) for n in wb.sheetnames if plain(n) not in FIXED_SHEETS + ('Все организации', 'Сети')]
     numbers = {d: files[d][0] for d in districts if d in files}
     for d in sorted(d for d in districts if d not in numbers):
@@ -330,11 +372,12 @@ def finalize(out, per_district=None, date=None):
         renumber_summary(wb['Сводка'], numbers)
 
     contents, food_total, mismatch = [], 0, []
-    for name in ('Единая Россия', 'Религия'):
+    for name, what in (('Единая Россия', 'отделения партии: районные и окружное ЮЗАО'),
+                       ('Религия', 'религиозные учреждения всех районов, Яндекс Карты'),
+                       (EXTRA_RELIGION, EXTRA_WHAT)):
         if name in wb.sheetnames:
-            what = ('отделения партии: районные и окружное ЮЗАО' if name == 'Единая Россия'
-                    else 'религиозные учреждения всех районов')
-            contents.append([name, len(sheet_rows(wb[name])[1]), what])
+            count = len(sheet_rows(wb[name])[1]) - (1 if name == EXTRA_RELIGION else 0)
+            contents.append([name, count, what])
     for d in sorted(numbers, key=numbers.get):
         sheet = wb[f'{numbers[d]:02d} {d}']
         total, counts = group_counts(sheet)
@@ -344,7 +387,7 @@ def finalize(out, per_district=None, date=None):
             counts = district_stats[d][1]
         food_total += total
         contents.append([sheet.title, total, 'питание: ' + (food_note(counts) or '—')])
-    contents.append(['ВСЕГО', food_total + sum(r[1] for r in contents[:2] if r[0] in FIXED_SHEETS),
+    contents.append(['ВСЕГО', food_total + sum(r[1] for r in contents if r[0] in FIXED_SHEETS),
                      f'питание {food_total} + религия и отделения партии'])
     help_sheet(wb, 'РЕЕСТР ОРГАНИЗАЦИЙ ЮЗАО', contents, date)
 
@@ -512,7 +555,8 @@ def build(args):
     flagged = [r for r in religion if r['_dup']]
     if flagged:
         print(f'помечено как возможные дубли: {len(flagged)} строк (колонка «Возможный дубль»)')
-    finalize(args.out, args.per_district, args.date)
+    finalize(args.out, args.per_district, args.date,
+             json.load(open(args.extra_religion, encoding='utf-8')) if args.extra_religion else None)
 
 
 def main():
@@ -521,14 +565,16 @@ def main():
     p.add_argument('--finalize', action='store_true',
                    help='не собирать заново, а доработать готовые --out и --per-district: '
                         'справка, порядок листов, номера районов')
+    p.add_argument('--extra-religion', help='JSON из tools/religion_check.py --dobor: лист «Религия — вне Карт»')
     p.add_argument('--date', help='дата фиксации данных для справки, ДД.ММ.ГГГГ (по умолчанию сегодня)')
     p.add_argument('--er', help='xlsx с отделениями партии (ведётся вручную, необязателен)')
     p.add_argument('--out', default='REESTR_otchet.xlsx', help='куда сохранить книгу')
     p.add_argument('--csv-dir', help='также выгрузить питание и религию отдельными CSV')
     p.add_argument('--per-district', help='папка для отдельных xlsx по каждому району')
     args = p.parse_args()
+    extra = json.load(open(args.extra_religion, encoding='utf-8')) if args.extra_religion else None
     if args.finalize:
-        finalize(args.out, args.per_district, args.date)
+        finalize(args.out, args.per_district, args.date, extra)
     elif args.final:
         build(args)
     else:
