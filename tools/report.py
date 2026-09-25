@@ -508,33 +508,42 @@ RELIGION_COLS = [('№', 5), ('Район', 16), ('Название', 46), ('К�
                  ('Источник', 26), ('Ссылка', 30), ('Примечание', 30), ('place_id', 14)]
 
 
-def merge_religion(wb):
+def merge_religion(wb, district=None):
     """One religious sheet in the general book: the Yandex rows and the rows
     other sources found (the «вне Карт» sheet), told apart by Источник. Yandex
     rows keep their place_id; the others carry the reference they came with.
     Running it again on a merged sheet changes nothing."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from religion_check import confession, object_type
-    if 'Религия' not in wb.sheetnames:
+    if 'Религия' not in wb.sheetnames and EXTRA_RELIGION not in wb.sheetnames:
         return
-    header, rows = sheet_rows(wb['Религия'])
-    if 'Источник' in header and EXTRA_RELIGION not in wb.sheetnames:
-        return
-    ix = {h: i for i, h in enumerate(header)}
-    get = lambda r, k: r[ix[k]] if k in ix and r[ix[k]] is not None else ''
-    merged = []
-    for r in rows:
-        if 'Источник' in ix:
-            if get(r, 'Источник') == 'Яндекс Карты':
-                merged.append([get(r, c) for c, _ in RELIGION_COLS])
-            continue
-        if not get(r, 'title'):
-            continue
-        title, rubrics = get(r, 'title'), get(r, 'categories')
-        merged.append(['', get(r, 'district'), title, confession(f'{title} {rubrics}'), object_type(title, rubrics),
-                       rubrics, get(r, 'address'), get(r, 'phone'), get(r, 'website'), get(r, 'opening_hours'),
-                       get(r, 'rating'), get(r, 'review_count'), 'Яндекс Карты', get(r, 'maps_url'), '',
-                       get(r, 'place_id')])
+    merged, header = [], []
+    if 'Религия' in wb.sheetnames:
+        ws0 = wb['Религия']
+        header = [c.value for c in ws0[1]]
+        if 'Источник' in header and EXTRA_RELIGION not in wb.sheetnames:
+            return
+        ix = {h: i for i, h in enumerate(header) if h}
+        # Three layouts arrive here: the export's raw columns (title, ...),
+        # the district books' working columns (Название, ...), and a sheet
+        # already merged (Источник). Links sit in hyperlinks, so read cells.
+        for cells in ws0.iter_rows(min_row=2):
+            val = lambda k: cells[ix[k]].value if k in ix and cells[ix[k]].value is not None else ''
+            link = lambda k: (cells[ix[k]].hyperlink.target if k in ix and cells[ix[k]].hyperlink else '') or ''
+            if 'Источник' in ix:
+                if val('Источник') == 'Яндекс Карты':
+                    merged.append([val(c) for c, _ in RELIGION_COLS])
+                continue
+            title = val('title') or val('Название')
+            if not title:
+                continue
+            rubrics = val('categories') or val('Рубрики')
+            merged.append(['', val('district') or district or '', title, confession(f'{title} {rubrics}'),
+                           object_type(title, rubrics), rubrics, val('address') or val('Адрес'),
+                           val('phone') or val('Телефон'), val('website') or link('Сайт') or val('Сайт'),
+                           val('opening_hours') or val('Часы работы'), val('rating') or val('Рейтинг'),
+                           val('review_count') or val('Отзывов'), 'Яндекс Карты',
+                           val('maps_url') or link('Карточка'), val('Возможный дубль'), val('place_id')])
     if EXTRA_RELIGION in wb.sheetnames:
         h2, rows2 = sheet_rows(wb[EXTRA_RELIGION])
         i2 = {h: i for i, h in enumerate(h2)}
@@ -547,8 +556,13 @@ def merge_religion(wb):
         wb.remove(wb[EXTRA_RELIGION])
     merged.sort(key=lambda m: (str(m[1]) if m[1] and m[1] != 'не указан' else 'я', m[12] != 'Яндекс Карты',
                                str(m[3]) != 'Православие', str(m[2]).lower()))
-    at = wb.sheetnames.index('Религия')
-    wb.remove(wb['Религия'])
+    if not merged:
+        return
+    if 'Религия' in wb.sheetnames:
+        at = wb.sheetnames.index('Религия')
+        wb.remove(wb['Религия'])
+    else:
+        at = wb.sheetnames.index('Единая Россия') if 'Единая Россия' in wb.sheetnames else len(wb.sheetnames)
     ws = wb.create_sheet('Религия', at)
     ws.append([c for c, _ in RELIGION_COLS])
     for n, m in enumerate(merged, 1):
@@ -583,15 +597,20 @@ def finalize(out, per_district=None, date=None, extra=None):
     for district, (n, path) in files.items():
         book = load_workbook(path)
         total, counts = group_counts(book['Организации']) if 'Организации' in book.sheetnames else (0, {})
-        rel = len(sheet_rows(book['Религия'])[1]) if 'Религия' in book.sheetnames else 0
-        er = len(sheet_rows(book['Единая Россия'])[1]) if 'Единая Россия' in book.sheetnames else 0
         if extra is not None:
             extra_religion_sheet(book, [e for e in extra if e['district'] == district])
+        merge_religion(book, district)
+        rel_h, rel_rows = sheet_rows(book['Религия']) if 'Религия' in book.sheetnames else ([], [])
+        rel = len(rel_rows)
+        rel_other = sum(1 for r in rel_rows if 'Источник' in rel_h and r[rel_h.index('Источник')] != 'Яндекс Карты')
+        er = len(sheet_rows(book['Единая Россия'])[1]) if 'Единая Россия' in book.sheetnames else 0
         more = len(sheet_rows(book[EXTRA_RELIGION])[1]) - 1 if EXTRA_RELIGION in book.sheetnames else 0
         district_stats[district] = (total, counts)
         contents = [['Организации', total, 'питание: ' + (food_note(counts) or '—')]]
         if rel:
-            contents.append(['Религия', rel, 'религиозные учреждения района'])
+            contents.append(['Религия', rel, 'религиозные учреждения района' + (
+                f': {rel - rel_other} с Яндекс Карт и {rel_other} из списка епархии, OpenStreetMap и ЕГРЮЛ '
+                '(колонка «Источник»)' if rel_other else '')])
         if more:
             contents.append([EXTRA_RELIGION, more, EXTRA_WHAT])
         if er:
