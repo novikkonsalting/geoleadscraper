@@ -348,9 +348,11 @@ def groups_for(rubrics):
 
 def patch_cards(out, per_district, cards):
     """Fills in rows the export left bare (detail_level LIST_ONLY: the card
-    fetch failed, so only name and coordinates came through) from cards read
-    later. Rows are found by place_id and nothing else; a place_id not in the
-    books is reported, never added."""
+    fetch failed, so what came through is whatever the search list carried)
+    from cards read later. Only empty cells are filled - what the export has
+    stays - and Группа only where it is '—', so a religious row never gains a
+    food group. Rows are found by place_id and nothing else; a place_id not in
+    the books is reported, never added."""
     fields = {'Рубрики': 'categories', 'Адрес': 'address', 'Телефон': 'phone', 'Сайт': 'website',
               'Часы работы': 'hours', 'Рейтинг': 'rating', 'Отзывов': 'reviews'}
     raw_cols = {'address': 'address', 'phone': 'phone', 'website': 'website', 'categories': 'categories',
@@ -371,22 +373,28 @@ def patch_cards(out, per_district, cards):
             for col, key in colmap.items():
                 if col in header and card.get(key) not in (None, ''):
                     cell = sheet.cell(row, header.index(col) + 1)
+                    if cell.value not in (None, ''):
+                        continue
                     cell.value = card[key]
                     if key == 'website':
                         cell.hyperlink, cell.font = card[key], LINK
             if group_col and group_col in header:
-                sheet.cell(row, header.index(group_col) + 1).value = groups_for(card.get('categories'))
+                cell = sheet.cell(row, header.index(group_col) + 1)
+                if cell.value in (None, '', '—'):
+                    cell.value = groups_for(card.get('categories'))
 
     if per_district:
         for path in sorted(glob.glob(os.path.join(per_district, '[0-9][0-9]_*.xlsx'))):
             book = load_workbook(path)
+            if 'Религия' in book.sheetnames:
+                fill(book['Религия'], fields, 'Группа')
             if 'Организации' in book.sheetnames:
                 fill(book['Организации'], fields, 'Группа')
                 district_counts[os.path.basename(path)[3:-5].replace('_', ' ')] = group_counts(book['Организации'])[1]
             book.save(path)
     wb = load_workbook(out)
     for sheet in wb:
-        if plain(sheet.title) not in FIXED_SHEETS + ('Все организации', 'Сети'):
+        if plain(sheet.title) not in ('Справка', 'Сводка', 'Единая Россия', EXTRA_RELIGION, 'Сети'):
             fill(sheet, raw_cols if 'title' in [c.value for c in sheet[1]] else fields, 'Группа')
     if 'Сводка' in wb.sheetnames and district_counts:
         ws = wb['Сводка']
